@@ -135,7 +135,89 @@ Transport is a trait. Both implementations must:
 The user configures one transport at install time. Supporting both
 simultaneously on one machine is out of scope.
 
-## Language and style
+## Testing infrastructure
+
+Mina has three tiers of testing. Know which tier a test belongs to before
+writing it.
+
+### Tier 1 — Unit tests (automated, always run in CI)
+
+Pure logic with no system dependencies. Fast, hermetic, no mocking framework
+needed. These live in `#[cfg(test)]` modules inside each source file.
+
+What belongs here:
+- Path extraction heuristics (`file_capture.rs`) — feed command strings in,
+  assert candidate paths out
+- Text detection (`file_capture.rs`) — byte buffers in, bool out
+- `session.json` serialization / deserialization (`bundle.rs`)
+- Bundle directory layout logic (`bundle.rs`)
+- Transport retry logic, independent of the actual network call
+- Config parsing (`mina.toml` edge cases)
+
+Rule: if a test needs the filesystem, PAM, auditd, or a network socket,
+it does not belong in Tier 1.
+
+### Tier 2 — Integration tests with mocks (automated, always run in CI)
+
+PAM and auditd are behind traits. Tests inject fakes that simulate realistic
+event sequences without requiring a real system stack.
+
+```rust
+// Example: PAM session handler accepts any type implementing PamSession
+pub trait PamSession {
+    fn user(&self) -> &str;
+    fn source_ip(&self) -> Option<&str>;
+    fn opened_at(&self) -> SystemTime;
+}
+
+// In tests: FakePamSession { user: "alice", source_ip: "10.0.1.42", ... }
+```
+
+Similarly, `CommandSource` is a trait implemented by both the real auditd
+harvester and a `FakeCommandSource` that replays a scripted command sequence.
+
+What belongs here:
+- Full session lifecycle: open → commands → close → bundle assembly
+- Transport trait: assert the bundle is handed off correctly, without
+  actually sending anything (`FakeTransport` that captures what it receives)
+- Failure paths: session close with no commands, unreadable files,
+  oversized files, transport failure + retry
+
+These live in `tests/` at the crate root, one file per module under test.
+
+### Tier 3 — Manual end-to-end (documented, never automated)
+
+Anything that requires a real PAM stack, a real SSH daemon, or a real
+auditd instance lives here — as a **documented runbook**, not code.
+
+The runbook lives at `docs/manual-testing.md` and covers:
+
+- Installing the agent on a fresh Debian/Ubuntu VM
+- Verifying PAM hooks fire on SSH login and logout
+- Verifying auditd fallback when `pam_tty_audit` is unavailable
+- Verifying the shell hook fallback when auditd is absent entirely
+- A full session: login → edit a file → logout → inspect the nest bundle
+- Transport: SSH and HTTPS, including failure and retry behaviour
+- `mina install-pam` and `mina uninstall-pam` are clean and reversible
+
+Manual tests are run before any release tag. They are not run in CI.
+If something can only be tested manually, that is acceptable — but it
+must be in the runbook.
+
+### CI pipeline
+
+```
+cargo test          # Tier 1 + Tier 2 (all mocked)
+cargo clippy        # No warnings permitted
+cargo fmt --check   # Formatting is not negotiable
+```
+
+No system dependencies required in CI. The pipeline must pass on a stock
+GitHub Actions `ubuntu-latest` runner without any additional setup.
+
+If a proposed test requires installing PAM headers, launching sshd, or
+running as root in CI: move it to the manual runbook instead.
+
 
 - **Rust** for the agent and nest server. Stable toolchain only.
 - **No unsafe** except where PAM FFI strictly requires it, and only in
