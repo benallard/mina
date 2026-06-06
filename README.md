@@ -6,7 +6,7 @@ Mina is a lightweight, passive SSH session auditor for Linux fleets. It records 
 
 No agent UI. No database to maintain. No workflow changes for your admins. It just runs.
 
----
+> Named after the myna bird — the watchful companion that sits on your shoulder, mimics everything it sees, and always finds its way home.
 
 ## Why Mina
 
@@ -15,8 +15,6 @@ Every ops team has the same problem: something breaks, someone fixed it, nobody 
 The audit trail also creates a gentle accountability nudge. When admins know their sessions are recorded and the touched files are archived, the bar for "I'll document it later" quietly rises.
 
 Mina is **not** a security tool aimed at attackers. It is a **team hygiene tool** aimed at your own admins.
-
----
 
 ## How it works
 
@@ -50,8 +48,6 @@ Nest  (central collector)
                └── opt/myapp/config.yml
 ```
 
----
-
 ## Session bundle format
 
 **`session.json`**
@@ -80,8 +76,6 @@ Nest  (central collector)
 
 **`files/`** — each captured file stored at its mirrored path, content as-is at session close. Text files only; binaries are skipped silently.
 
----
-
 ## Requirements
 
 **On monitored machines:**
@@ -93,8 +87,6 @@ Nest  (central collector)
 - Any Linux machine with SSH access and a writable directory, **or**
 - A small HTTP endpoint (if using HTTPS transport)
 - No database, no special software
-
----
 
 ## Installation
 
@@ -161,8 +153,6 @@ mina-nest serve --dir /var/mina --port 8765
 # Put it behind nginx/caddy with TLS for production use
 ```
 
----
-
 ## Browsing reports
 
 Reports are plain directories — use whatever you already know:
@@ -184,8 +174,6 @@ grep -rl "nginx.conf" /var/mina/*/session.json
 
 A query CLI (`mina-cli`) is on the roadmap.
 
----
-
 ## Transport options
 
 | Transport | How it works | Best for |
@@ -197,8 +185,6 @@ Transport is selected at install time via `mina.toml`. Both can coexist if you h
 
 > **VPN / port-blocked environments:** use HTTPS transport. The nest endpoint can sit behind a reverse proxy (nginx, Caddy) on port 443, which passes through virtually all corporate firewalls and VPNs.
 
----
-
 ## What Mina does not do
 
 - **Real-time alerting** — Mina reports at session close, not live. Use Falco or auditd rules if you need live tripwires.
@@ -206,16 +192,12 @@ Transport is selected at install time via `mina.toml`. Both can coexist if you h
 - **Prevent anything** — Mina is read-only and passive. It does not block commands or enforce policy.
 - **Replace documentation** — it makes documentation easier, not automatic. The bundle is the raw material; a human still writes the change ticket.
 
----
-
 ## Security considerations
 
 - The Mina agent runs as root (required for PAM hooks). The binary should be owned root, mode 755, and verified via checksum after install.
 - The nest SSH key should be **write-only** (restrict to `rsync --server` in `authorized_keys`). Mina never needs to read from the nest.
 - Session bundles may contain sensitive file contents. Secure the nest accordingly — treat it like a backup server.
 - Mina does not capture passwords typed at prompts (auditd's `log_passwd=off` default is preserved).
-
----
 
 ## Roadmap
 
@@ -225,8 +207,6 @@ Transport is selected at install time via `mina.toml`. Both can coexist if you h
 - [ ] `tmux` / `screen` session attribution
 - [ ] `sudo` pivot tracking (attribute files changed under sudo to the original user)
 - [ ] Redaction rules — suppress capture of files matching path patterns (e.g. `*.key`, `*secret*`)
-
----
 
 ## Contributing
 
@@ -248,8 +228,6 @@ mina/
 ```
 
 Python contributions welcome for parsing/analysis tooling under `tools/`.
-
----
 
 ## License
 
