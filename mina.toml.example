@@ -1,0 +1,38 @@
+# /etc/mina.toml — Mina agent configuration
+# Copy this file to /etc/mina.toml and adjust before running `mina install-pam`.
+
+[nest]
+# Transport backend: "ssh" (default) or "https".
+#
+# ssh   — ships bundles via rsync over SSH. No new ports required.
+#         Requires a key at /etc/mina/nest_key (see README).
+#
+# https — POSTs a tarball to an HTTP endpoint. Use when port 22 is
+#         blocked or the nest is behind a corporate firewall.
+#         The endpoint MUST be HTTPS; plain HTTP is rejected.
+#
+transport = "ssh"
+
+# SSH destination (required when transport = "ssh").
+# Format: user@host:/path  — the path must be writable by that user.
+ssh_destination = "mina@nest.example.com:/var/mina"
+
+# HTTPS endpoint (required when transport = "https").
+# https_endpoint = "https://nest.example.com/ingest"
+
+
+[capture]
+# Files larger than this are skipped and noted in session.json (kilobytes).
+# Raise this if you manage large config files (e.g. bundled certificates).
+text_size_limit_kb = 512
+
+# Path prefixes to never capture, regardless of what appears on the command
+# line. Add any application-specific secret directories here.
+skip_paths = [
+    "/proc",
+    "/sys",
+    "/dev",
+    "/tmp",
+    "/run",
+    # "/etc/ssl/private",   # example: skip private keys
+]
