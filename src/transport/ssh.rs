@@ -3,7 +3,6 @@
 /// Ships the bundle by invoking rsync over SSH.
 /// Requires a pre-deployed SSH key at /etc/mina/nest_key.
 /// The nest's authorized_keys should restrict this key to rsync-only.
-
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;

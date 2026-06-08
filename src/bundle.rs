@@ -9,7 +9,6 @@
 ///     session.json
 ///     commands.log
 ///     files/{mirrored absolute path}
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

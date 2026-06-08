@@ -3,7 +3,6 @@
 /// Responsibility: record session open/close, user, source IP, timestamps.
 /// Nothing else. This module does not touch files, parse commands, or
 /// know about transport.
-
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

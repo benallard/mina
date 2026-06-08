@@ -3,7 +3,6 @@
 /// Responsibility: ship a completed bundle to the nest.
 /// Implementations know nothing about what is inside the bundle —
 /// they receive a directory path and a destination, and they deliver it.
-
 use anyhow::Result;
 use std::path::Path;
 

@@ -3,7 +3,6 @@
 /// Responsibility: extract candidate file paths from commands, detect
 /// whether a file is text, snapshot its content.
 /// This module does not know about sessions, bundles, or transport.
-
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
@@ -95,10 +94,7 @@ pub enum CaptureOutcome {
 pub enum SkipReason {
     NotFound,
     Binary,
-    TooLarge {
-        size_kb: u64,
-        limit_kb: u64,
-    },
+    TooLarge { size_kb: u64, limit_kb: u64 },
     ReadError(String),
 }
 

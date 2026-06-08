@@ -5,10 +5,8 @@
 ///
 /// TODO: implement using a minimal HTTP client (ureq or curl invocation).
 ///       Keeping this as a stub until the SSH transport is proven.
-
 use anyhow::Result;
 use std::path::Path;
-
 
 use super::Transport;
 

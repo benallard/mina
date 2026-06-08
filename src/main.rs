@@ -56,11 +56,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::InstallPam    => cmd_install_pam(),
-        Command::UninstallPam  => cmd_uninstall_pam(),
-        Command::InstallAudit  => cmd_install_audit(),
-        Command::SessionOpen   => cmd_session_open(),
-        Command::SessionClose  => cmd_session_close(),
+        Command::InstallPam => cmd_install_pam(),
+        Command::UninstallPam => cmd_uninstall_pam(),
+        Command::InstallAudit => cmd_install_audit(),
+        Command::SessionOpen => cmd_session_open(),
+        Command::SessionClose => cmd_session_close(),
     }
 }
 

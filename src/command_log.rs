@@ -3,7 +3,6 @@
 /// Responsibility: collect the timestamped list of commands run during
 /// a session. Two sources: shell hook (PROMPT_COMMAND) or auditd.
 /// This module does not know about files, bundles, or transport.
-
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
