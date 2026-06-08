@@ -9,7 +9,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
-
 // ── Trait — mockable in tests ─────────────────────────────────────────────
 
 /// Abstraction over a PAM session event.
@@ -51,9 +50,8 @@ impl SessionMeta {
     }
 
     pub fn duration_seconds(&self) -> Option<i64> {
-        self.ended_at.map(|end| {
-            (end - self.started_at).num_seconds()
-        })
+        self.ended_at
+            .map(|end| (end - self.started_at).num_seconds())
     }
 }
 
@@ -71,8 +69,7 @@ pub struct EnvPamSession {
 impl EnvPamSession {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            user: std::env::var("PAM_USER")
-                .unwrap_or_else(|_| "unknown".into()),
+            user: std::env::var("PAM_USER").unwrap_or_else(|_| "unknown".into()),
             source_ip: std::env::var("PAM_RHOST").ok(),
             hostname: hostname()?,
             opened_at: SystemTime::now(),
@@ -81,10 +78,18 @@ impl EnvPamSession {
 }
 
 impl PamSession for EnvPamSession {
-    fn user(&self) -> &str { &self.user }
-    fn source_ip(&self) -> Option<&str> { self.source_ip.as_deref() }
-    fn hostname(&self) -> &str { &self.hostname }
-    fn opened_at(&self) -> SystemTime { self.opened_at }
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn source_ip(&self) -> Option<&str> {
+        self.source_ip.as_deref()
+    }
+    fn hostname(&self) -> &str {
+        &self.hostname
+    }
+    fn opened_at(&self) -> SystemTime {
+        self.opened_at
+    }
 }
 
 fn hostname() -> Result<String> {
@@ -109,10 +114,18 @@ mod tests {
     }
 
     impl PamSession for FakePamSession {
-        fn user(&self) -> &str { self.user }
-        fn source_ip(&self) -> Option<&str> { self.source_ip }
-        fn hostname(&self) -> &str { self.hostname }
-        fn opened_at(&self) -> SystemTime { self.opened_at }
+        fn user(&self) -> &str {
+            self.user
+        }
+        fn source_ip(&self) -> Option<&str> {
+            self.source_ip
+        }
+        fn hostname(&self) -> &str {
+            self.hostname
+        }
+        fn opened_at(&self) -> SystemTime {
+            self.opened_at
+        }
     }
 
     fn fake_session() -> FakePamSession {

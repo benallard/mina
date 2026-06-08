@@ -7,7 +7,6 @@
 use anyhow::Result;
 use std::path::Path;
 
-
 pub mod https;
 pub mod ssh;
 
@@ -36,7 +35,10 @@ pub mod fake {
 
     impl FakeTransport {
         pub fn new() -> Self {
-            Self { shipped: Arc::new(Mutex::new(vec![])), should_fail: false }
+            Self {
+                shipped: Arc::new(Mutex::new(vec![])),
+                should_fail: false,
+            }
         }
     }
 

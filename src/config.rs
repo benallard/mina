@@ -41,7 +41,9 @@ pub struct CaptureConfig {
     pub skip_paths: Vec<PathBuf>,
 }
 
-fn default_size_limit() -> u64 { 512 }
+fn default_size_limit() -> u64 {
+    512
+}
 
 fn default_skip_paths() -> Vec<PathBuf> {
     ["/proc", "/sys", "/dev", "/tmp", "/run"]

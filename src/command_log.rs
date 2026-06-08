@@ -8,7 +8,6 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-
 // ── Types ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,7 +127,9 @@ mod tests {
     #[test]
     fn shell_hook_source_returns_empty_for_missing_file() {
         let dir = TempDir::new().unwrap();
-        let source = ShellHookSource { log_dir: dir.path().to_owned() };
+        let source = ShellHookSource {
+            log_dir: dir.path().to_owned(),
+        };
         let entries = source.commands_for_session(99999).unwrap();
         assert!(entries.is_empty());
     }
@@ -140,7 +141,9 @@ mod tests {
         writeln!(f, "1717200000000\tcd /etc/nginx").unwrap();
         writeln!(f, "1717200005000\tvim nginx.conf").unwrap();
 
-        let source = ShellHookSource { log_dir: dir.path().to_owned() };
+        let source = ShellHookSource {
+            log_dir: dir.path().to_owned(),
+        };
         let entries = source.commands_for_session(1234).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].command, "vim nginx.conf");

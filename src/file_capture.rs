@@ -7,21 +7,15 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-
 // ── Path extraction ───────────────────────────────────────────────────────
 
 /// Verbs that strongly suggest their arguments are file paths.
 /// This list is intentionally conservative — false negatives are
 /// acceptable; false positives are not. See AGENTS.md.
 const WRITE_VERBS: &[&str] = &[
-    "vim", "vi", "nano", "emacs", "ed", "micro", "helix",
-    "cp", "mv", "install",
-    "cat", "tee",
-    "sed", "awk", "perl", "python", "python3",
-    "echo", "printf",
-    "chmod", "chown", "chgrp",
-    "ln", "truncate",
-    "patch",
+    "vim", "vi", "nano", "emacs", "ed", "micro", "helix", "cp", "mv", "install", "cat", "tee",
+    "sed", "awk", "perl", "python", "python3", "echo", "printf", "chmod", "chown", "chgrp", "ln",
+    "truncate", "patch",
 ];
 
 /// Extract candidate file paths from a shell command string.
@@ -48,16 +42,24 @@ pub fn extract_paths(command: &str) -> Vec<PathBuf> {
 }
 
 fn looks_like_path(token: &str) -> bool {
-    if token.starts_with('-') { return false; }  // flag
-    // Reject tokens containing shell metacharacters — these are arguments
-    // like 's/foo/bar/g', globs, or quoted strings, not file paths.
+    if token.starts_with('-') {
+        return false;
+    } // flag
+      // Reject tokens containing shell metacharacters — these are arguments
+      // like 's/foo/bar/g', globs, or quoted strings, not file paths.
     if token.contains(|c| matches!(c, '\'' | '"' | '*' | '?' | '=' | ';' | '&' | '|')) {
         return false;
     }
-    if token.starts_with('/') { return true; }   // absolute path
-    if token.starts_with("./") || token.starts_with("../") { return true; }
+    if token.starts_with('/') {
+        return true;
+    } // absolute path
+    if token.starts_with("./") || token.starts_with("../") {
+        return true;
+    }
     // Relative paths containing a slash but not starting with one
-    if token.contains('/') { return true; }
+    if token.contains('/') {
+        return true;
+    }
     false
 }
 
@@ -93,7 +95,10 @@ pub enum CaptureOutcome {
 pub enum SkipReason {
     NotFound,
     Binary,
-    TooLarge { size_kb: u64, limit_kb: u64 },
+    TooLarge {
+        size_kb: u64,
+        limit_kb: u64,
+    },
     ReadError(String),
 }
 
@@ -118,7 +123,10 @@ pub fn snapshot(path: &Path, size_limit_kb: u64, skip_prefixes: &[PathBuf]) -> C
 
     let size_kb = metadata.len() / 1024;
     if size_kb > size_limit_kb {
-        return CaptureOutcome::Skipped(SkipReason::TooLarge { size_kb, limit_kb: size_limit_kb });
+        return CaptureOutcome::Skipped(SkipReason::TooLarge {
+            size_kb,
+            limit_kb: size_limit_kb,
+        });
     }
 
     if !is_text_file(path) {
@@ -213,7 +221,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = dir.path().join("binary");
         std::fs::write(&p, b"\x00\x01\x02").unwrap();
-        assert!(matches!(snapshot(&p, 512, &[]), CaptureOutcome::Skipped(SkipReason::Binary)));
+        assert!(matches!(
+            snapshot(&p, 512, &[]),
+            CaptureOutcome::Skipped(SkipReason::Binary)
+        ));
     }
 
     #[test]
@@ -234,6 +245,9 @@ mod tests {
         let p = dir.path().join("secret.conf");
         std::fs::write(&p, "password=hunter2\n").unwrap();
         let skips = vec![dir.path().to_owned()];
-        assert!(matches!(snapshot(&p, 512, &skips), CaptureOutcome::Skipped(_)));
+        assert!(matches!(
+            snapshot(&p, 512, &skips),
+            CaptureOutcome::Skipped(_)
+        ));
     }
 }

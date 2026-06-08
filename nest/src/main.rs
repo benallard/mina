@@ -11,5 +11,8 @@
 ///       raw std::net::TcpListener to keep deps minimal).
 
 fn main() {
-    println!("mina-nest v{} — not yet implemented", env!("CARGO_PKG_VERSION"));
+    println!(
+        "mina-nest v{} — not yet implemented",
+        env!("CARGO_PKG_VERSION")
+    );
 }

@@ -14,7 +14,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-
 use crate::command_log::CommandEntry;
 use crate::file_capture::{CaptureOutcome, SkipReason};
 use crate::pam_hook::SessionMeta;
@@ -108,7 +107,7 @@ impl Bundle {
 /// e.g. "2025-06-01_14-32-05_alice"
 fn bundle_name(meta: &SessionMeta) -> String {
     format!(
-        "{}_{}", 
+        "{}_{}",
         meta.started_at.format("%Y-%m-%d_%H-%M-%S"),
         meta.user
     )
@@ -123,11 +122,12 @@ fn mirror_path(files_dir: &Path, path: &Path) -> PathBuf {
 
 fn describe_skip(reason: &SkipReason) -> String {
     match reason {
-        SkipReason::NotFound      => "not found or not a file".into(),
-        SkipReason::Binary        => "binary file".into(),
-        SkipReason::TooLarge { size_kb, limit_kb }
-            => format!("too large ({size_kb}KB > {limit_kb}KB limit)"),
-        SkipReason::ReadError(e)  => format!("read error: {e}"),
+        SkipReason::NotFound => "not found or not a file".into(),
+        SkipReason::Binary => "binary file".into(),
+        SkipReason::TooLarge { size_kb, limit_kb } => {
+            format!("too large ({size_kb}KB > {limit_kb}KB limit)")
+        }
+        SkipReason::ReadError(e) => format!("read error: {e}"),
     }
 }
 
@@ -161,10 +161,10 @@ mod tests {
     fn bundle_creates_expected_files() {
         let staging = TempDir::new().unwrap();
         let meta = fake_meta();
-        let captures = vec![
-            (PathBuf::from("/etc/nginx/nginx.conf"),
-             CaptureOutcome::Captured("worker_processes 1;\n".into())),
-        ];
+        let captures = vec![(
+            PathBuf::from("/etc/nginx/nginx.conf"),
+            CaptureOutcome::Captured("worker_processes 1;\n".into()),
+        )];
 
         let bundle = Bundle::write(staging.path(), meta, fake_commands(), captures).unwrap();
 
@@ -186,10 +186,10 @@ mod tests {
     #[test]
     fn skipped_files_are_recorded_in_session_json() {
         let staging = TempDir::new().unwrap();
-        let captures = vec![
-            (PathBuf::from("/etc/ssl/private/key.pem"),
-             CaptureOutcome::Skipped(SkipReason::Binary)),
-        ];
+        let captures = vec![(
+            PathBuf::from("/etc/ssl/private/key.pem"),
+            CaptureOutcome::Skipped(SkipReason::Binary),
+        )];
         let bundle = Bundle::write(staging.path(), fake_meta(), vec![], captures).unwrap();
         let json = std::fs::read_to_string(bundle.root.join("session.json")).unwrap();
         let report: SessionReport = serde_json::from_str(&json).unwrap();
