@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
+
 // ── Trait — mockable in tests ─────────────────────────────────────────────
 
 /// Abstraction over a PAM session event.

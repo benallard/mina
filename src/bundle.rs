@@ -14,6 +14,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+
 use crate::command_log::CommandEntry;
 use crate::file_capture::{CaptureOutcome, SkipReason};
 use crate::pam_hook::SessionMeta;
