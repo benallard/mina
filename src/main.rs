@@ -88,13 +88,15 @@ fn main() -> Result<()> {
 fn session_key() -> Result<u32> {
     // /proc/self/stat: "pid (comm) state ppid ..."
     // `comm` may contain spaces and '(' / ')'; use rfind(')') to skip it.
-    let stat = std::fs::read_to_string("/proc/self/stat")
-        .context("failed to read /proc/self/stat")?;
+    let stat =
+        std::fs::read_to_string("/proc/self/stat").context("failed to read /proc/self/stat")?;
     let after_comm = stat
         .rfind(')')
         .context("unexpected format in /proc/self/stat")?;
     let mut fields = stat[after_comm + 1..].split_whitespace();
-    let _state = fields.next().context("missing state field in /proc/self/stat")?;
+    let _state = fields
+        .next()
+        .context("missing state field in /proc/self/stat")?;
     fields
         .next()
         .context("missing ppid field in /proc/self/stat")?
