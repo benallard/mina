@@ -32,6 +32,12 @@ pub mod fake {
         pub should_fail: bool,
     }
 
+    impl Default for FakeTransport {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl FakeTransport {
         pub fn new() -> Self {
             Self {

@@ -3,7 +3,6 @@
 /// Responsibility: extract candidate file paths from commands, detect
 /// whether a file is text, snapshot its content.
 /// This module does not know about sessions, bundles, or transport.
-use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 // ── Path extraction ───────────────────────────────────────────────────────
@@ -11,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// Verbs that strongly suggest their arguments are file paths.
 /// This list is intentionally conservative — false negatives are
 /// acceptable; false positives are not. See AGENTS.md.
+#[allow(dead_code)] // used as hint; extraction logic will reference this when matured
 const WRITE_VERBS: &[&str] = &[
     "vim", "vi", "nano", "emacs", "ed", "micro", "helix", "cp", "mv", "install", "cat", "tee",
     "sed", "awk", "perl", "python", "python3", "echo", "printf", "chmod", "chown", "chgrp", "ln",
@@ -36,7 +36,7 @@ pub fn extract_paths(command: &str) -> Vec<PathBuf> {
 
     args.iter()
         .filter(|t| looks_like_path(t))
-        .map(|t| PathBuf::from(t))
+        .map(PathBuf::from)
         .collect()
 }
 
@@ -46,7 +46,7 @@ fn looks_like_path(token: &str) -> bool {
     } // flag
       // Reject tokens containing shell metacharacters — these are arguments
       // like 's/foo/bar/g', globs, or quoted strings, not file paths.
-    if token.contains(|c| matches!(c, '\'' | '"' | '*' | '?' | '=' | ';' | '&' | '|')) {
+    if token.contains(['\'', '"', '*', '?', '=', ';', '&', '|']) {
         return false;
     }
     if token.starts_with('/') {
@@ -140,7 +140,6 @@ pub fn snapshot(path: &Path, size_limit_kb: u64, skip_prefixes: &[PathBuf]) -> C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
 
     // ── extract_paths ──

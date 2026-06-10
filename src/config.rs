@@ -78,7 +78,6 @@ skip_paths = ["/proc", "/sys", "/dev", "/tmp", "/run"]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn parses_example_config() {

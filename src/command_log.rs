@@ -100,7 +100,8 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    // Fake source for use in higher-level integration tests
+    // Fake source for use in higher-level integration tests (tests/ tier 2)
+    #[allow(dead_code)]
     pub struct FakeCommandSource(pub Vec<CommandEntry>);
 
     impl CommandSource for FakeCommandSource {
