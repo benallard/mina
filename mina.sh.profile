@@ -5,11 +5,16 @@
 # Logs each command to /run/mina/<ppid>.cmds in the format:
 #   <unix_timestamp_ms>\t<command>
 #
+# The file key is $PPID (the sshd child PID), which is the same value
+# used as the session key by `mina session-open` and `mina session-close`.
+# This makes all three processes agree on the session identifier without
+# any extra IPC.
+#
 # The file is harvested by `mina session-close` (via PAM) at logout.
 # Supports bash and zsh. Other shells fall back silently (no logging).
 
 _mina_log_dir="/run/mina"
-_mina_log_file="${_mina_log_dir}/$$.cmds"
+_mina_log_file="${_mina_log_dir}/${PPID}.cmds"
 
 # Ensure the log directory exists (created by mina at boot via tmpfiles.d)
 [ -d "$_mina_log_dir" ] || exit 0

@@ -3,9 +3,10 @@
 /// Responsibility: record session open/close, user, source IP, timestamps.
 /// Nothing else. This module does not touch files, parse commands, or
 /// know about transport.
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 // ── Trait — mockable in tests ─────────────────────────────────────────────
@@ -98,12 +99,66 @@ fn hostname() -> Result<String> {
         .to_owned())
 }
 
+// ── Session state (persisted between session-open and session-close) ──────
+
+/// Written to `/run/mina/<session_key>.session` by `mina session-open` and
+/// read back by `mina session-close`.
+///
+/// **Session key** is the PPID of both `pam_exec` invocations (the sshd
+/// child process that owns this connection).  It equals `$PPID` inside the
+/// login shell, making it a stable identifier shared by all three processes.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionState {
+    /// PID of the sshd child — the stable, shared session identifier.
+    pub session_key: u32,
+    pub meta: SessionMeta,
+}
+
+impl SessionState {
+    pub fn new(session: &dyn PamSession, session_key: u32) -> Self {
+        Self {
+            session_key,
+            meta: SessionMeta::open(session),
+        }
+    }
+
+    /// Write state to `<run_dir>/<session_key>.session`.
+    pub fn save(&self, run_dir: &Path) -> Result<()> {
+        let path = Self::path(run_dir, self.session_key);
+        let json = serde_json::to_string(self)?;
+        std::fs::write(&path, json)
+            .with_context(|| format!("failed to write session state to {}", path.display()))
+    }
+
+    /// Read state from `<run_dir>/<session_key>.session`.
+    pub fn load(run_dir: &Path, session_key: u32) -> Result<Self> {
+        let path = Self::path(run_dir, session_key);
+        let json = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read session state from {}", path.display()))?;
+        serde_json::from_str(&json)
+            .with_context(|| format!("failed to parse session state from {}", path.display()))
+    }
+
+    /// Delete the state file once the bundle has been shipped.
+    pub fn remove(&self, run_dir: &Path) -> Result<()> {
+        let path = Self::path(run_dir, self.session_key);
+        std::fs::remove_file(&path)
+            .with_context(|| format!("failed to remove session state at {}", path.display()))
+    }
+
+    /// Canonical path for a given session key.
+    pub fn path(run_dir: &Path, session_key: u32) -> PathBuf {
+        run_dir.join(format!("{}.session", session_key))
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+    use tempfile::TempDir;
 
     struct FakePamSession {
         user: &'static str,
@@ -166,5 +221,46 @@ mod tests {
         };
         let meta = SessionMeta::open(&s);
         assert!(meta.source_ip.is_none());
+    }
+
+    // ── SessionState ──
+
+    fn fake_state(key: u32) -> SessionState {
+        SessionState::new(&fake_session(), key)
+    }
+
+    #[test]
+    fn session_state_round_trips_through_disk() {
+        let dir = TempDir::new().unwrap();
+        let state = fake_state(12345);
+        state.save(dir.path()).unwrap();
+
+        let loaded = SessionState::load(dir.path(), 12345).unwrap();
+        assert_eq!(loaded.session_key, 12345);
+        assert_eq!(loaded.meta.user, "alice");
+        assert_eq!(loaded.meta.source_ip.as_deref(), Some("10.0.1.42"));
+        assert!(loaded.meta.ended_at.is_none());
+    }
+
+    #[test]
+    fn session_state_path_uses_session_key() {
+        let path = SessionState::path(Path::new("/run/mina"), 9999);
+        assert_eq!(path, PathBuf::from("/run/mina/9999.session"));
+    }
+
+    #[test]
+    fn session_state_remove_deletes_file() {
+        let dir = TempDir::new().unwrap();
+        let state = fake_state(42);
+        state.save(dir.path()).unwrap();
+        assert!(SessionState::path(dir.path(), 42).exists());
+        state.remove(dir.path()).unwrap();
+        assert!(!SessionState::path(dir.path(), 42).exists());
+    }
+
+    #[test]
+    fn load_missing_state_returns_error() {
+        let dir = TempDir::new().unwrap();
+        assert!(SessionState::load(dir.path(), 99999).is_err());
     }
 }

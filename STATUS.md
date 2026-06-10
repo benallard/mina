@@ -22,8 +22,8 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | 7 | Transport trait + FakeTransport | `src/transport/mod.rs` | ✅ Done | Ready for integration tests |
 | 8 | SSH/rsync transport | `src/transport/ssh.rs` | 🟡 Partial | Works, but **no retry**, no syslog |
 | 9 | Shell hook script | `mina.sh.profile` | ✅ Done | Bash + zsh, ms timestamps, safe PROMPT_COMMAND chaining |
-| 10 | CLI entry point (subcommands) | `src/main.rs` | ❌ Stub | Prints version only — **blocks everything** |
-| 11 | Session state persistence | *(missing)* | ❌ Missing | open→close cross-process handoff |
+| 10 | CLI entry point (subcommands) | `src/main.rs` | ✅ Done | clap wired; session-open + session-close implemented (Step 2) |
+| 11 | Session state persistence | `src/pam_hook.rs`, `src/main.rs` | ✅ Done | `SessionState` save/load/remove; keyed on sshd PPID |
 | 12 | `session-close` orchestration | *(missing)* | ❌ Missing | Main pipeline wiring |
 | 13 | `install-pam` / `uninstall-pam` | *(missing)* | ❌ Missing | pam_exec + profile.d + tmpfiles.d |
 | 14 | HTTPS transport | `src/transport/https.rs` | ❌ Stub | `bail!("not yet implemented")` |
@@ -56,8 +56,8 @@ Work items in priority order. Check them off as they land.
 
 - [x] **Step 1** — Add `clap` to `Cargo.toml`; wire all subcommands in `main.rs`
   (`install-pam`, `uninstall-pam`, `install-audit`, `session-open`, `session-close`, `version`)
-- [ ] **Step 2** — Session state file: write on `session-open`, read on `session-close`
-  (e.g. `/run/mina/<pid>.session` as JSON)
+- [x] **Step 2** — Session state file: write on `session-open`, read on `session-close`
+  (`SessionState` in `pam_hook.rs`; session key = sshd child PPID; shell hook uses `$PPID`)
 - [ ] **Step 3** — `session-close` orchestration: load state → read commands → extract paths → snapshot → bundle → ship → cleanup
 - [ ] **Step 4** — `install-pam` / `uninstall-pam`: pam_exec entries, profile.d deploy, tmpfiles.d entry
 - [ ] **Step 5** — Retry logic in `SshTransport` + syslog-on-failure for all transports

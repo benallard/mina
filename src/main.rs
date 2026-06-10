@@ -1,5 +1,12 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use std::path::Path;
+
+use mina_lib::pam_hook::{EnvPamSession, SessionState};
+
+/// Directory where session state files and command logs are stored.
+/// Created at boot by the tmpfiles.d entry installed by `mina install-pam`.
+const RUN_DIR: &str = "/run/mina";
 
 /// Mina — passive SSH session auditor.
 ///
@@ -68,6 +75,38 @@ fn main() -> Result<()> {
 // Each lives in its own function so it can grow into a separate module
 // (src/cmd/install_pam.rs etc.) without touching the dispatch table.
 
+// ── Session key ───────────────────────────────────────────────────────────
+
+/// Return the session key for the current process: the PPID read from
+/// `/proc/self/stat`.
+///
+/// The session key is the PID of the sshd child process that owns this
+/// connection.  It is the PPID of both `pam_exec` invocations (`session-open`
+/// and `session-close`) and equals `$PPID` inside the login shell, giving all
+/// three processes a stable shared identifier without any extra IPC.
+#[cfg(target_os = "linux")]
+fn session_key() -> Result<u32> {
+    // /proc/self/stat: "pid (comm) state ppid ..."
+    // `comm` may contain spaces and '(' / ')'; use rfind(')') to skip it.
+    let stat = std::fs::read_to_string("/proc/self/stat")
+        .context("failed to read /proc/self/stat")?;
+    let after_comm = stat
+        .rfind(')')
+        .context("unexpected format in /proc/self/stat")?;
+    let mut fields = stat[after_comm + 1..].split_whitespace();
+    let _state = fields.next().context("missing state field in /proc/self/stat")?;
+    fields
+        .next()
+        .context("missing ppid field in /proc/self/stat")?
+        .parse::<u32>()
+        .context("ppid in /proc/self/stat is not a valid u32")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn session_key() -> Result<u32> {
+    bail!("session_key() is only supported on Linux")
+}
+
 fn cmd_install_pam() -> Result<()> {
     // TODO (Step 4):
     //   1. Write pam_exec lines to /etc/pam.d/sshd
@@ -97,26 +136,57 @@ fn cmd_install_audit() -> Result<()> {
 }
 
 fn cmd_session_open() -> Result<()> {
-    // TODO (Step 2):
-    //   1. Read PAM environment via EnvPamSession::from_env()
-    //   2. Determine the login shell PID (PAM_TTY / $PPID)
-    //   3. Serialise {user, source_ip, hostname, started_at, shell_pid}
-    //      to /run/mina/<shell_pid>.session as JSON
-    //   4. Ensure /run/mina exists (fail gracefully if not)
-    bail!("session-open: not yet implemented (see STATUS.md Step 2)")
+    let run_dir = Path::new(RUN_DIR);
+    if !run_dir.exists() {
+        // /run/mina is created by tmpfiles.d at boot.
+        // If it is missing we log and exit cleanly — never block login.
+        eprintln!("mina: {RUN_DIR} does not exist; session will not be recorded");
+        eprintln!("mina: run `mina install-pam` to configure tmpfiles.d");
+        return Ok(());
+    }
+
+    let key = session_key().context("could not determine session key")?;
+    let pam = EnvPamSession::from_env().context("could not read PAM environment")?;
+    let state = SessionState::new(&pam, key);
+
+    if let Err(e) = state.save(run_dir) {
+        // Log the error but never propagate — never block login.
+        eprintln!("mina: session-open failed to save state: {e}");
+    }
+
+    Ok(())
 }
 
 fn cmd_session_close() -> Result<()> {
-    // TODO (Step 3):
-    //   1. Determine shell PID ($PPID from PAM env or /proc)
-    //   2. Load /run/mina/<shell_pid>.session
-    //   3. Load /etc/mina.toml via Config::load()
-    //   4. Read commands via ShellHookSource (or AuditdSource if configured)
-    //   5. Extract candidate paths via file_capture::extract_paths()
-    //   6. Snapshot each path via file_capture::snapshot()
-    //   7. Assemble bundle via Bundle::write()
-    //   8. Ship via SshTransport or HttpsTransport (with retry)
-    //   9. Clean up /run/mina/<shell_pid>.{session,cmds}
-    //  10. On any failure: log to syslog but exit 0 (never block logout)
-    bail!("session-close: not yet implemented (see STATUS.md Step 3)")
+    let run_dir = Path::new(RUN_DIR);
+
+    let key = match session_key() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("mina: session-close could not determine session key: {e}");
+            return Ok(()); // Never block logout
+        }
+    };
+
+    let mut state = match SessionState::load(run_dir, key) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("mina: session-close could not load session state: {e}");
+            return Ok(()); // Never block logout
+        }
+    };
+
+    state.meta.close(); // records ended_at = now
+
+    // TODO (Step 3): full session-close orchestration
+    //   1. Load /etc/mina.toml via Config::load()
+    //   2. Read commands via ShellHookSource::commands_for_session(key)
+    //   3. Extract candidate paths via file_capture::extract_paths()
+    //   4. Snapshot each path via file_capture::snapshot()
+    //   5. Assemble bundle via Bundle::write()
+    //   6. Ship via SshTransport or HttpsTransport (with retry — Step 5)
+    //   7. state.remove(run_dir)  — clean up state + cmds files
+    //   8. On any failure: log to syslog but exit 0 (never block logout)
+
+    Ok(())
 }
