@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "nest"]
+members = ["."]
 resolver = "2"
 
 [package]
@@ -13,6 +13,10 @@ repository = "https://github.com/yourorg/mina"
 [[bin]]
 name = "mina"
 path = "src/main.rs"
+
+[[bin]]
+name = "mina-nest"
+path = "src/nest.rs"
 
 [lib]
 name = "mina_lib"

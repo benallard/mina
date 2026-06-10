@@ -27,7 +27,7 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | 12 | `session-close` orchestration | *(missing)* | ❌ Missing | Main pipeline wiring |
 | 13 | `install-pam` / `uninstall-pam` | *(missing)* | ❌ Missing | pam_exec + profile.d + tmpfiles.d |
 | 14 | HTTPS transport | `src/transport/https.rs` | ❌ Stub | `bail!("not yet implemented")` |
-| 15 | Nest ingest server | `nest/src/main.rs` | ❌ Stub | `println!("not yet implemented")` |
+| 15 | Nest ingest server | `src/nest.rs` | ❌ Stub | `println!("not yet implemented")` |
 | 16 | Auditd source | `src/command_log.rs` | ❌ Stub | `bail!("not yet implemented")` |
 | 17 | Tier 2 integration tests | `tests/` | ❌ Missing | Directory does not exist |
 | 18 | Config validation | `src/config.rs` | ❌ Missing | No TLS enforcement, no cross-field checks |
@@ -65,7 +65,7 @@ Work items in priority order. Check them off as they land.
 - [ ] **Step 7** — Fix Q1–Q6 quality issues (is_text_file, timestamps, FakeCommandSource, SkipReason, staging_dir, session PID)
 - [ ] **Step 8** — `Config::validate()` — TLS scheme enforcement, cross-field checks (Q9)
 - [ ] **Step 9** — `HttpsTransport`: tarball creation + ureq/curl POST
-- [ ] **Step 10** — `nest/main.rs`: minimal HTTP ingest server (TLS terminated by reverse proxy)
+- [ ] **Step 10** — `src/nest.rs`: minimal HTTP ingest server (TLS terminated by reverse proxy)
 - [ ] **Step 11** — `AuditdSource`: `ausearch` integration
 - [ ] **Step 12** — Pre-release: run manual testing runbook (`docs/manual-testing.md`), tag `v0.1.0`
 

@@ -57,6 +57,7 @@ These are not up for debate in pull requests or AI suggestions:
 mina/
 ├── src/
 │   ├── main.rs          # CLI entrypoint: install, uninstall, version
+│   ├── nest.rs          # mina-nest binary: optional HTTPS ingest endpoint
 │   ├── pam_hook.rs      # PAM open/close handlers — session metadata only
 │   ├── command_log.rs   # Command stream: shell hook + auditd harvester
 │   ├── file_capture.rs  # Path extraction from commands, text detection,
@@ -66,8 +67,6 @@ mina/
 │       ├── mod.rs       # Transport trait — all shippers implement this
 │       ├── ssh.rs       # rsync over SSH
 │       └── https.rs     # HTTP POST (TLS only)
-└── nest/
-    └── main.rs          # Optional HTTPS ingest endpoint (minimal)
 
 tools/                   # Python analysis/query tools (not part of core)
 ```

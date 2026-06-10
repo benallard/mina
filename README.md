@@ -214,17 +214,16 @@ Mina is written in Rust. The codebase is intentionally small — the goal is a t
 
 ```
 mina/
-├── src/
-│   ├── main.rs          # CLI entrypoint + install helpers
-│   ├── pam_hook.rs      # PAM session open/close handlers
-│   ├── command_log.rs   # Shell hook + auditd harvester
-│   ├── file_capture.rs  # Path extraction, text detection, snapshotting
-│   ├── bundle.rs        # session.json + archive assembly
-│   └── transport/
-│       ├── ssh.rs       # rsync-based shipper
-│       └── https.rs     # HTTP POST shipper
-└── nest/
-    └── main.rs          # Optional HTTPS nest endpoint
+└── src/
+    ├── main.rs          # CLI entrypoint + install helpers
+    ├── nest.rs          # mina-nest binary: HTTPS ingest endpoint
+    ├── pam_hook.rs      # PAM session open/close handlers
+    ├── command_log.rs   # Shell hook + auditd harvester
+    ├── file_capture.rs  # Path extraction, text detection, snapshotting
+    ├── bundle.rs        # session.json + archive assembly
+    └── transport/
+        ├── ssh.rs       # rsync-based shipper
+        └── https.rs     # HTTP POST shipper
 ```
 
 Python contributions welcome for parsing/analysis tooling under `tools/`.

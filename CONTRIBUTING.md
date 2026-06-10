@@ -24,7 +24,7 @@ cargo fmt --check   # should produce no diff
 | What you're adding | Where it goes |
 |---|---|
 | Core agent logic | `src/` |
-| Nest ingest server | `nest/src/` |
+| Nest ingest server | `src/nest.rs` |
 | Analysis / query scripts | `tools/` (Python, stdlib-only preferred) |
 | Manual test steps | `docs/manual-testing.md` |
 
