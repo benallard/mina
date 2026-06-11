@@ -7,6 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Fully-static Linux binary — no glibc version dependency on target machines
+  MUSL_TARGET: x86_64-unknown-linux-musl
 
 jobs:
   test:
@@ -38,3 +40,89 @@ jobs:
 
       - name: Run tests (unit + mocked integration)
         run: cargo test --all
+
+  # ── Dev binary build + publish ─────────────────────────────────────────────
+  # Runs only on pushes to main, after tests pass.
+  # Produces a rolling "dev" pre-release that always points to the latest
+  # commit on main — stable download URLs never change.
+  publish-dev:
+    name: Publish dev binary
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to create / update the GitHub release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain + musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.MUSL_TARGET }}
+
+      - name: Install musl-tools (provides musl-gcc linker)
+        run: sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry + build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-musl-
+
+      - name: Build static release binaries (musl)
+        run: |
+          cargo build --release --target ${{ env.MUSL_TARGET }} \
+            --bin mina --bin mina-nest
+
+      - name: Prepare artefacts
+        run: |
+          BINDIR=target/${{ env.MUSL_TARGET }}/release
+          SHORT_SHA=$(git rev-parse --short HEAD)
+
+          # Commit-stamped copies (permanent, one per build)
+          cp "$BINDIR/mina"      "mina-linux-x86_64-${SHORT_SHA}"
+          cp "$BINDIR/mina-nest" "mina-nest-linux-x86_64-${SHORT_SHA}"
+
+          # Stable names — always the latest dev build (overwritten each run)
+          cp "$BINDIR/mina"      "mina-linux-x86_64"
+          cp "$BINDIR/mina-nest" "mina-nest-linux-x86_64"
+
+          sha256sum \
+            "mina-linux-x86_64-${SHORT_SHA}" \
+            "mina-nest-linux-x86_64-${SHORT_SHA}" \
+            "mina-linux-x86_64" \
+            "mina-nest-linux-x86_64" \
+            > "sha256sums-${SHORT_SHA}.txt"
+
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+      - name: Update rolling "dev" pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: "Development build (latest main)"
+          prerelease: true
+          body: |
+            Automated build from `main` — commit ${{ github.sha }}
+
+            These are **development binaries** built from the tip of `main`.
+            Statically linked (musl) — no runtime dependencies on target machines.
+
+            | Binary | Purpose |
+            |---|---|
+            | `mina-linux-x86_64` | Agent — install on monitored machines |
+            | `mina-nest-linux-x86_64` | Nest ingest server (HTTPS transport) |
+
+            **Stable-name install (always the latest dev build):**
+            ```bash
+            curl -Lo /usr/local/bin/mina \
+              https://github.com/${{ github.repository }}/releases/download/dev/mina-linux-x86_64
+            chmod +x /usr/local/bin/mina
+            ```
+
+            SHA-256 checksums are attached as `sha256sums-<sha>.txt`.
