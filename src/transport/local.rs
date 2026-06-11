@@ -114,7 +114,6 @@ fn set_readonly_recursive(dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
 
     /// Build a minimal fake bundle tree:
