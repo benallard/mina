@@ -1,8 +1,16 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::HashSet;
 use std::path::Path;
 
+use mina_lib::bundle::Bundle;
+use mina_lib::command_log::{CommandSource, ShellHookSource};
+use mina_lib::config::{Config, TransportKind, DEFAULT_CONFIG_PATH};
+use mina_lib::file_capture::{extract_paths, snapshot};
 use mina_lib::pam_hook::{EnvPamSession, SessionState};
+use mina_lib::transport::https::HttpsTransport;
+use mina_lib::transport::ssh::SshTransport;
+use mina_lib::transport::Transport;
 
 /// Directory where session state files and command logs are stored.
 /// Created at boot by the tmpfiles.d entry installed by `mina install-pam`.
@@ -180,15 +188,108 @@ fn cmd_session_close() -> Result<()> {
 
     state.meta.close(); // records ended_at = now
 
-    // TODO (Step 3): full session-close orchestration
-    //   1. Load /etc/mina.toml via Config::load()
-    //   2. Read commands via ShellHookSource::commands_for_session(key)
-    //   3. Extract candidate paths via file_capture::extract_paths()
-    //   4. Snapshot each path via file_capture::snapshot()
-    //   5. Assemble bundle via Bundle::write()
-    //   6. Ship via SshTransport or HttpsTransport (with retry — Step 5)
-    //   7. state.remove(run_dir)  — clean up state + cmds files
-    //   8. On any failure: log to syslog but exit 0 (never block logout)
+    if let Err(e) = run_close_pipeline(&state, run_dir, key) {
+        eprintln!("mina: session-close pipeline failed: {e:#}");
+    }
+
+    // Always clean up state and command log — even if the pipeline failed.
+    if let Err(e) = state.remove(run_dir) {
+        eprintln!("mina: failed to remove session state file: {e}");
+    }
+    let cmds_path = run_dir.join(format!("{key}.cmds"));
+    if cmds_path.exists() {
+        if let Err(e) = std::fs::remove_file(&cmds_path) {
+            eprintln!("mina: failed to remove command log: {e}");
+        }
+    }
 
     Ok(())
+}
+
+/// The core pipeline run at session close.
+///
+/// All errors propagate upward; the caller (`cmd_session_close`) logs them
+/// and ensures the user's shell exits regardless.
+fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<()> {
+    // 1. Load config
+    let config =
+        Config::load(Path::new(DEFAULT_CONFIG_PATH)).context("failed to load /etc/mina.toml")?;
+
+    // 2. Read commands recorded by the shell hook
+    let source = ShellHookSource {
+        log_dir: run_dir.to_owned(),
+    };
+    let commands = source
+        .commands_for_session(key)
+        .context("failed to read command log")?;
+
+    // 3. Extract candidate file paths, deduplicated, first-seen order
+    let mut seen = HashSet::new();
+    let candidate_paths: Vec<_> = commands
+        .iter()
+        .flat_map(|e| extract_paths(&e.command))
+        .filter(|p| seen.insert(p.clone()))
+        .collect();
+
+    // 4. Snapshot each candidate (text detection + size limit + skip list)
+    let captures: Vec<_> = candidate_paths
+        .into_iter()
+        .map(|path| {
+            let outcome = snapshot(
+                &path,
+                config.capture.text_size_limit_kb,
+                &config.capture.skip_paths,
+            );
+            (path, outcome)
+        })
+        .collect();
+
+    // 5. Assemble on-disk bundle
+    let bundle = Bundle::write(&config.staging_dir, state.meta.clone(), commands, captures)
+        .context("failed to assemble bundle")?;
+
+    // 6. Build the configured transport and ship (retry once on failure)
+    let transport = build_transport(&config)?;
+    ship_with_retry(transport.as_ref(), &bundle.root).context("failed to ship bundle")?;
+
+    Ok(())
+}
+
+/// Build a boxed `Transport` from the loaded config.
+fn build_transport(config: &Config) -> Result<Box<dyn Transport>> {
+    match config.nest.transport {
+        TransportKind::Ssh => {
+            let destination = config
+                .nest
+                .ssh_destination
+                .clone()
+                .context("nest.ssh_destination is required when transport = \"ssh\"")?;
+            Ok(Box::new(SshTransport {
+                destination,
+                key_path: config.nest.ssh_key_path.clone(),
+            }))
+        }
+        TransportKind::Https => {
+            let endpoint = config
+                .nest
+                .https_endpoint
+                .clone()
+                .context("nest.https_endpoint is required when transport = \"https\"")?;
+            Ok(Box::new(HttpsTransport { endpoint }))
+        }
+    }
+}
+
+/// Ship the bundle, retrying once on transient failure.
+///
+/// AGENTS.md requirement: "Retry at least once on transient failure before
+/// giving up."  A second failure is returned to the caller unchanged.
+fn ship_with_retry(transport: &dyn Transport, bundle_root: &Path) -> Result<()> {
+    match transport.ship(bundle_root) {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            eprintln!("mina: ship attempt 1 failed ({first_err:#}), retrying…");
+            transport.ship(bundle_root)
+        }
+    }
 }

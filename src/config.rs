@@ -9,6 +9,11 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/mina.toml";
 pub struct Config {
     pub nest: NestConfig,
     pub capture: CaptureConfig,
+
+    /// Staging directory where bundles are assembled before being shipped.
+    /// Default: /tmp/mina-staging
+    #[serde(default = "default_staging_dir")]
+    pub staging_dir: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +23,10 @@ pub struct NestConfig {
 
     /// e.g. "mina@nest.example.com:/var/mina"  (SSH transport)
     pub ssh_destination: Option<String>,
+
+    /// Path to the SSH private key used by rsync.  Default: /etc/mina/nest_key
+    #[serde(default = "default_ssh_key_path")]
+    pub ssh_key_path: String,
 
     /// e.g. "https://nest.example.com/ingest"  (HTTPS transport)
     pub https_endpoint: Option<String>,
@@ -45,6 +54,14 @@ fn default_size_limit() -> u64 {
     512
 }
 
+fn default_staging_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("/tmp/mina-staging")
+}
+
+fn default_ssh_key_path() -> String {
+    "/etc/mina/nest_key".to_owned()
+}
+
 fn default_skip_paths() -> Vec<PathBuf> {
     ["/proc", "/sys", "/dev", "/tmp", "/run"]
         .iter()
@@ -66,11 +83,14 @@ pub const EXAMPLE_CONFIG: &str = r#"
 [nest]
 transport = "ssh"                         # "ssh" or "https"
 ssh_destination = "mina@nest.example.com:/var/mina"
+ssh_key_path = "/etc/mina/nest_key"
 # https_endpoint = "https://nest.example.com/ingest"
 
 [capture]
 text_size_limit_kb = 512
 skip_paths = ["/proc", "/sys", "/dev", "/tmp", "/run"]
+
+# staging_dir = "/tmp/mina-staging"       # where bundles are assembled before shipping
 "#;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
