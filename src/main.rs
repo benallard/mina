@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::Path;
 
 use mina_lib::bundle::Bundle;
