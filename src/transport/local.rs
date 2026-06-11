@@ -38,10 +38,7 @@ impl Transport for LocalTransport {
 
         // Temporary name: same location, underscore-prefixed, so it is
         // invisible to readers that scan for the canonical pattern.
-        let tmp_dest = dest_host_dir.join(format!(
-            ".tmp_{}",
-            bundle_name.to_string_lossy()
-        ));
+        let tmp_dest = dest_host_dir.join(format!(".tmp_{}", bundle_name.to_string_lossy()));
 
         fs::create_dir_all(&dest_host_dir)
             .with_context(|| format!("failed to create {}", dest_host_dir.display()))?;
@@ -57,9 +54,8 @@ impl Transport for LocalTransport {
 
         // 2. Set all files read-only before the rename so the bundle is
         //    already immutable the moment it becomes visible.
-        set_readonly_recursive(&tmp_dest).with_context(|| {
-            format!("failed to set read-only on {}", tmp_dest.display())
-        })?;
+        set_readonly_recursive(&tmp_dest)
+            .with_context(|| format!("failed to set read-only on {}", tmp_dest.display()))?;
 
         // 3. Atomic rename into final position
         fs::rename(&tmp_dest, &final_dest).with_context(|| {
@@ -87,9 +83,8 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            fs::copy(&src_path, &dst_path).with_context(|| {
-                format!("copy {} → {}", src_path.display(), dst_path.display())
-            })?;
+            fs::copy(&src_path, &dst_path)
+                .with_context(|| format!("copy {} → {}", src_path.display(), dst_path.display()))?;
         }
     }
     Ok(())
@@ -127,9 +122,7 @@ mod tests {
     ///     session.json
     ///     commands.log
     fn make_fake_bundle(staging: &Path) -> PathBuf {
-        let root = staging
-            .join("web-01")
-            .join("2025-06-01_12-00-00_alice");
+        let root = staging.join("web-01").join("2025-06-01_12-00-00_alice");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("session.json"), b"{}").unwrap();
         fs::write(root.join("commands.log"), b"12:00:00\tls -la\n").unwrap();
@@ -147,11 +140,11 @@ mod tests {
         };
         transport.ship(&bundle_root).unwrap();
 
-        let final_path = dest
-            .path()
-            .join("web-01")
-            .join("2025-06-01_12-00-00_alice");
-        assert!(final_path.exists(), "bundle directory should exist at destination");
+        let final_path = dest.path().join("web-01").join("2025-06-01_12-00-00_alice");
+        assert!(
+            final_path.exists(),
+            "bundle directory should exist at destination"
+        );
         assert!(final_path.join("session.json").exists());
         assert!(final_path.join("commands.log").exists());
     }
@@ -174,7 +167,10 @@ mod tests {
             .join("2025-06-01_12-00-00_alice")
             .join("session.json");
         let perms = fs::metadata(&session_json).unwrap().permissions();
-        assert!(perms.readonly(), "session.json should be read-only after shipping");
+        assert!(
+            perms.readonly(),
+            "session.json should be read-only after shipping"
+        );
     }
 
     #[test]
@@ -203,4 +199,3 @@ mod tests {
         assert_eq!(entries.len(), 1);
     }
 }
-
