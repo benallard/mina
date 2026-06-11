@@ -1,7 +1,7 @@
 # Mina — Project Status
 
-> Last audited: 2026-06-10  
-> Completion estimate: ~50 %  
+> Last audited: 2026-06-11  
+> Completion estimate: ~60 %  
 > Auditor: GitHub Copilot / initial weekend-project review
 
 This file tracks what is done, what is stubbed, and what needs to be built.
@@ -26,7 +26,7 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | 10 | CLI entry point (subcommands) | `src/main.rs` | ✅ Done | clap wired; session-open + session-close implemented (Step 2) |
 | 11 | Session state persistence | `src/pam_hook.rs`, `src/main.rs` | ✅ Done | `SessionState` save/load/remove; keyed on sshd PPID |
 | 12 | `session-close` orchestration | `src/main.rs` | ✅ Done | Full pipeline: commands → paths → snapshot → bundle → ship (retry once) → cleanup |
-| 13 | `install-pam` / `uninstall-pam` | *(missing)* | ❌ Missing | pam_exec + profile.d + tmpfiles.d |
+| 13 | `install-pam` / `uninstall-pam` | `src/main.rs` | ✅ Done | pam_exec block (idempotent), profile.d copy, tmpfiles.d, config bootstrap |
 | 14 | HTTPS transport | `src/transport/https.rs` | ❌ Stub | `bail!("not yet implemented")` |
 | 15 | Nest ingest server | `src/nest.rs` | ❌ Stub | `println!("not yet implemented")` |
 | 16 | Auditd source | `src/command_log.rs` | ❌ Stub | `bail!("not yet implemented")` |
@@ -60,7 +60,7 @@ Work items in priority order. Check them off as they land.
 - [x] **Step 2** — Session state file: write on `session-open`, read on `session-close`
   (`SessionState` in `pam_hook.rs`; session key = sshd child PPID; shell hook uses `$PPID`)
 - [x] **Step 3** — `session-close` orchestration: load state → read commands → extract paths → snapshot → bundle → ship (with retry) → cleanup
-- [ ] **Step 4** — `install-pam` / `uninstall-pam`: pam_exec entries, profile.d deploy, tmpfiles.d entry
+- [x] **Step 4** — `install-pam` / `uninstall-pam`: pam_exec entries (guarded block, idempotent), profile.d deploy (with source fallback), tmpfiles.d entry, config bootstrap
 - [ ] **Step 5** — Syslog-on-failure for all transports (retry already done in Step 3)
 - [ ] **Step 6** — Create `tests/` with Tier 2 integration tests (full lifecycle, FakePam + FakeCommandSource)
 - [ ] **Step 7** — Fix Q1–Q6 quality issues (is_text_file, timestamps, FakeCommandSource, SkipReason, staging_dir, session PID)

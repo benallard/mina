@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::Path;
 
 use mina_lib::bundle::Bundle;
@@ -118,26 +119,219 @@ fn session_key() -> Result<u32> {
     bail!("session_key() is only supported on Linux")
 }
 
+// ── PAM / profile.d markers ───────────────────────────────────────────────
+
+/// The lines written into /etc/pam.d/sshd, wrapped in guard comments so
+/// `uninstall-pam` can find and remove exactly what was added.
+const PAM_BLOCK_BEGIN: &str = "# BEGIN mina";
+const PAM_BLOCK_END: &str = "# END mina";
+const PAM_LINES: &str = "\
+session optional pam_exec.so /usr/bin/mina session-open
+session optional pam_exec.so /usr/bin/mina session-close";
+
+const PAM_SSHD: &str = "/etc/pam.d/sshd";
+const PROFILE_D_DEST: &str = "/etc/profile.d/mina.sh";
+const PROFILE_D_SRC: &str = "/usr/share/mina/mina.sh.profile";
+const TMPFILES_DEST: &str = "/usr/lib/tmpfiles.d/mina.conf";
+const TMPFILES_LINE: &str = "d /run/mina 1777 root root -\n";
+
 fn cmd_install_pam() -> Result<()> {
-    // TODO (Step 4):
-    //   1. Write pam_exec lines to /etc/pam.d/sshd
-    //   2. Copy mina.sh.profile to /etc/profile.d/mina.sh
-    //   3. Write /usr/lib/tmpfiles.d/mina.conf  → "d /run/mina 1777 root root -"
-    //        NOTE: 1777 (sticky + world-writable) is required so that login
-    //        users can write their own .cmds files into the directory.
-    //   4. Write /etc/mina.toml from EXAMPLE_CONFIG if not already present
-    //   5. Print a summary of changes made
-    bail!("install-pam: not yet implemented (see STATUS.md Step 4)")
+    let mut changed: Vec<&str> = vec![];
+
+    // 1. /etc/mina.toml — write only if absent; data is precious
+    let config_path = Path::new(DEFAULT_CONFIG_PATH);
+    if !config_path.exists() {
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("could not create {}", parent.display()))?;
+        }
+        std::fs::write(config_path, mina_lib::config::EXAMPLE_CONFIG)
+            .with_context(|| format!("could not write {}", config_path.display()))?;
+        changed.push(DEFAULT_CONFIG_PATH);
+    } else {
+        println!("  skip  {DEFAULT_CONFIG_PATH} (already exists — not overwritten)");
+    }
+
+    // 2. /etc/profile.d/mina.sh — shell hook
+    //    Source is installed to /usr/share/mina/ by the package (or `make install`).
+    //    Fall back to the binary's own location for manual installs.
+    install_profile_d().context("could not install shell hook")?;
+    changed.push(PROFILE_D_DEST);
+
+    // 3. /usr/lib/tmpfiles.d/mina.conf — /run/mina at boot
+    {
+        let dest = Path::new(TMPFILES_DEST);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("could not create {}", parent.display()))?;
+        }
+        std::fs::write(dest, TMPFILES_LINE)
+            .with_context(|| format!("could not write {}", dest.display()))?;
+        changed.push(TMPFILES_DEST);
+    }
+
+    // 4. /etc/pam.d/sshd — append pam_exec lines (idempotent)
+    pam_install().context("could not update /etc/pam.d/sshd")?;
+    changed.push(PAM_SSHD);
+
+    println!("\nmina install-pam: done.");
+    for f in &changed {
+        println!("  wrote {f}");
+    }
+    println!("\nActivate /run/mina now (no reboot needed):");
+    println!("  systemd-tmpfiles --create /usr/lib/tmpfiles.d/mina.conf");
+    println!("  -- or --");
+    println!("  mkdir -p /run/mina && chmod 1777 /run/mina");
+
+    Ok(())
 }
 
 fn cmd_uninstall_pam() -> Result<()> {
-    // TODO (Step 4):
-    //   1. Remove pam_exec lines from /etc/pam.d/sshd
-    //   2. Remove /etc/profile.d/mina.sh
-    //   3. Remove /usr/lib/tmpfiles.d/mina.conf
-    //   4. Leave /etc/mina.toml and /var/mina in place (data is precious)
-    //   5. Print a summary of changes reverted
-    bail!("uninstall-pam: not yet implemented (see STATUS.md Step 4)")
+    let mut removed: Vec<&str> = vec![];
+    let mut skipped: Vec<&str> = vec![];
+
+    // 1. /etc/pam.d/sshd — remove only the mina block
+    match pam_uninstall() {
+        Ok(true) => removed.push(PAM_SSHD),
+        Ok(false) => skipped.push(PAM_SSHD),
+        Err(e) => eprintln!("  warn  could not update {PAM_SSHD}: {e}"),
+    }
+
+    // 2. /etc/profile.d/mina.sh
+    match std::fs::remove_file(PROFILE_D_DEST) {
+        Ok(()) => removed.push(PROFILE_D_DEST),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => skipped.push(PROFILE_D_DEST),
+        Err(e) => eprintln!("  warn  could not remove {PROFILE_D_DEST}: {e}"),
+    }
+
+    // 3. /usr/lib/tmpfiles.d/mina.conf
+    match std::fs::remove_file(TMPFILES_DEST) {
+        Ok(()) => removed.push(TMPFILES_DEST),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => skipped.push(TMPFILES_DEST),
+        Err(e) => eprintln!("  warn  could not remove {TMPFILES_DEST}: {e}"),
+    }
+
+    // /etc/mina.toml and /var/mina are deliberately left in place — data is precious.
+
+    println!("\nmina uninstall-pam: done.");
+    for f in &removed {
+        println!("  removed {f}");
+    }
+    for f in &skipped {
+        println!("  skip    {f} (not found — already uninstalled?)");
+    }
+    println!("\n  /etc/mina.toml and nest data directories were NOT removed.");
+    println!("  Remove them manually if you no longer need the data.");
+
+    Ok(())
+}
+
+// ── PAM block helpers ─────────────────────────────────────────────────────
+
+/// Append the mina pam_exec block to /etc/pam.d/sshd if not already present.
+fn pam_install() -> Result<()> {
+    let path = Path::new(PAM_SSHD);
+    let existing = std::fs::read_to_string(path)
+        .with_context(|| format!("could not read {}", path.display()))?;
+
+    if existing.contains(PAM_BLOCK_BEGIN) {
+        println!("  skip  {PAM_SSHD} (mina block already present)");
+        return Ok(());
+    }
+
+    let block = format!("\n{PAM_BLOCK_BEGIN}\n{PAM_LINES}\n{PAM_BLOCK_END}\n");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .with_context(|| format!("could not open {} for appending", path.display()))?;
+    use std::io::Write;
+    file.write_all(block.as_bytes())
+        .with_context(|| format!("could not write to {}", path.display()))?;
+
+    Ok(())
+}
+
+/// Remove the mina pam_exec block from /etc/pam.d/sshd.
+/// Returns Ok(true) if the block was found and removed, Ok(false) if not present.
+fn pam_uninstall() -> Result<bool> {
+    let path = Path::new(PAM_SSHD);
+    let existing = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
+    };
+
+    if !existing.contains(PAM_BLOCK_BEGIN) {
+        return Ok(false);
+    }
+
+    // Remove lines from PAM_BLOCK_BEGIN to PAM_BLOCK_END (inclusive)
+    let mut in_block = false;
+    let filtered: String = existing
+        .lines()
+        .filter(|line| {
+            if line.trim() == PAM_BLOCK_BEGIN {
+                in_block = true;
+            }
+            let keep = !in_block;
+            if line.trim() == PAM_BLOCK_END {
+                in_block = false;
+            }
+            keep
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Preserve trailing newline
+    let filtered = if existing.ends_with('\n') {
+        format!("{filtered}\n")
+    } else {
+        filtered
+    };
+
+    std::fs::write(path, filtered)
+        .with_context(|| format!("could not write {}", path.display()))?;
+
+    Ok(true)
+}
+
+// ── profile.d installer ───────────────────────────────────────────────────
+
+/// Copy the shell hook to /etc/profile.d/mina.sh.
+///
+/// Source search order (first found wins):
+///   1. /usr/share/mina/mina.sh.profile  (package install)
+///   2. Same directory as the running binary  (manual / dev install)
+fn install_profile_d() -> Result<()> {
+    let dest = Path::new(PROFILE_D_DEST);
+
+    // Find the source file
+    let src = if Path::new(PROFILE_D_SRC).exists() {
+        std::path::PathBuf::from(PROFILE_D_SRC)
+    } else {
+        // Fall back: look next to the running binary
+        let mut p = std::env::current_exe().context("could not determine binary path")?;
+        p.pop();
+        p.push("mina.sh.profile");
+        if !p.exists() {
+            bail!(
+                "could not find mina.sh.profile — tried {} and {}",
+                PROFILE_D_SRC,
+                p.display()
+            );
+        }
+        p
+    };
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+
+    std::fs::copy(&src, dest)
+        .with_context(|| format!("could not copy {} -> {}", src.display(), dest.display()))?;
+
+    Ok(())
 }
 
 fn cmd_install_audit() -> Result<()> {

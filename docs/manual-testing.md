@@ -33,57 +33,44 @@ sudo $EDITOR /etc/mina.toml   # set transport + destination (see below)
 
 ## 2. Install PAM hooks
 
-> **Note:** `mina install-pam` is not yet implemented (STATUS.md Step 4).
-> Perform the following steps manually. They are fully reversible.
+```bash
+sudo mina install-pam
+```
 
-**a) Create `/run/mina` with world-writable sticky permissions.**
-The shell hook runs as the login user and writes `.cmds` files here.
-`1777` (sticky + world-writable) is required — `0755` will silently
-drop all command capture.
+This single command:
+- Writes `/etc/mina.toml` from the bundled example (only if not already present)
+- Copies `mina.sh.profile` to `/etc/profile.d/mina.sh`
+- Writes `/usr/lib/tmpfiles.d/mina.conf` (`d /run/mina 1777 root root -`)
+- Appends a guarded `pam_exec` block to `/etc/pam.d/sshd` (idempotent — safe to run twice)
+
+It then prints a summary and a one-liner to activate `/run/mina` immediately
+without rebooting:
 
 ```bash
-sudo mkdir -p /run/mina
-sudo chmod 1777 /run/mina
+sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/mina.conf
+# -- or, if tmpfiles is not available --
+sudo mkdir -p /run/mina && sudo chmod 1777 /run/mina
 ```
 
-To make this survive reboots, create a `tmpfiles.d` entry:
-
-```bash
-echo "d /run/mina 1777 root root -" | sudo tee /usr/lib/tmpfiles.d/mina.conf
-```
-
-**b) Deploy the shell hook.**
-
-```bash
-sudo cp /path/to/mina.sh.profile /etc/profile.d/mina.sh
-sudo chmod 644 /etc/profile.d/mina.sh
-```
-
-**c) Add `pam_exec` lines to `/etc/pam.d/sshd`.**
-Add both lines in the `session` block (after any existing `session`
-lines to avoid ordering issues):
-
-```
-session optional pam_exec.so /usr/local/bin/mina session-open
-session optional pam_exec.so /usr/local/bin/mina session-close
-```
-
-```bash
-sudo $EDITOR /etc/pam.d/sshd
-```
-
-**d) Verify the expected changes are in place:**
+**Verify the expected changes are in place:**
 
 ```bash
 ls -la /run/mina               # should be drwxrwxrwt (1777)
 ls /etc/profile.d/mina.sh      # should exist
-grep pam_exec /etc/pam.d/sshd  # should show both lines
+grep -A4 "BEGIN mina" /etc/pam.d/sshd   # should show both pam_exec lines
+cat /etc/mina.toml             # should be the example config
 ```
 
-Verify hooks are reversible:
+**Verify hooks are reversible:**
+
 ```bash
-# To undo: remove the two pam_exec lines from /etc/pam.d/sshd,
-# delete /etc/profile.d/mina.sh, and remove /usr/lib/tmpfiles.d/mina.conf
+sudo mina uninstall-pam
+# Confirm:
+grep "BEGIN mina" /etc/pam.d/sshd  # should print nothing
+ls /etc/profile.d/mina.sh          # should be gone
+ls /usr/lib/tmpfiles.d/mina.conf   # should be gone
+# /etc/mina.toml is deliberately preserved — re-install is clean
+sudo mina install-pam              # should succeed again
 ```
 
 ---
