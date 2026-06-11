@@ -129,8 +129,8 @@ jobs:
             "mina-nest-linux-x86_64" \
             "sha256sums-${SHORT_SHA}.txt"
 
-          # Update the release body. GHA context values are passed as env vars
-          # above so no ${{ }} expressions appear inside the heredoc.
+          # Update the release body. GHA context values are in env vars
+          # (COMMIT_SHA, REPO) so the heredoc contains only bash variables.
           cat > /tmp/release-notes.md << NOTES
           Automated build from \`main\` — commit ${COMMIT_SHA}
 
