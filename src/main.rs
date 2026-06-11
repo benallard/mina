@@ -122,7 +122,9 @@ fn cmd_install_pam() -> Result<()> {
     // TODO (Step 4):
     //   1. Write pam_exec lines to /etc/pam.d/sshd
     //   2. Copy mina.sh.profile to /etc/profile.d/mina.sh
-    //   3. Write /usr/lib/tmpfiles.d/mina.conf  → "d /run/mina 0755 root root -"
+    //   3. Write /usr/lib/tmpfiles.d/mina.conf  → "d /run/mina 1777 root root -"
+    //        NOTE: 1777 (sticky + world-writable) is required so that login
+    //        users can write their own .cmds files into the directory.
     //   4. Write /etc/mina.toml from EXAMPLE_CONFIG if not already present
     //   5. Print a summary of changes made
     bail!("install-pam: not yet implemented (see STATUS.md Step 4)")

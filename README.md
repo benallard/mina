@@ -94,7 +94,7 @@ Nest  (central collector)
 ### 1. Install the agent on each monitored machine
 
 ```bash
-curl -Lo /usr/local/bin/mina https://github.com/yourorg/mina/releases/latest/download/mina-linux-x86_64
+curl -Lo /usr/local/bin/mina https://github.com/benallard/mina/releases/latest/download/mina-linux-x86_64
 chmod +x /usr/local/bin/mina
 ```
 
