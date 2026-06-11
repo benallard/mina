@@ -104,6 +104,8 @@ jobs:
       - name: Update rolling "dev" pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
         run: |
           SHORT_SHA="${{ env.SHORT_SHA }}"
 
@@ -111,16 +113,15 @@ jobs:
           git tag -f dev
           git push origin refs/tags/dev --force
 
-          # Create the release if it does not exist yet; safe to ignore the
-          # "already exists" error on subsequent runs.
+          # Create the release if it does not exist yet; ignore error on re-runs.
           gh release create dev \
             --prerelease \
             --title "Development build (latest main)" \
-            --notes "Automated build from \`main\` — see attached binaries." \
+            --notes "Automated build from main." \
             2>/dev/null || true
 
           # Upload every artefact, overwriting same-named assets from previous
-          # runs (--clobber).  This is what makes the stable URLs always fresh.
+          # runs.  --clobber is what keeps the stable download URLs always fresh.
           gh release upload dev --clobber \
             "mina-linux-x86_64-${SHORT_SHA}" \
             "mina-nest-linux-x86_64-${SHORT_SHA}" \
@@ -128,11 +129,10 @@ jobs:
             "mina-nest-linux-x86_64" \
             "sha256sums-${SHORT_SHA}.txt"
 
-          # Update the release body with the real commit and install snippet.
-          # Write to a temp file so both GHA expressions (${{ }}) and bash
-          # variables (${SHORT_SHA}) expand correctly without heredoc quoting issues.
-          cat > /tmp/release-notes.md << EOF
-          Automated build from \`main\` — commit ${{ github.sha }}
+          # Update the release body. GHA context values are passed as env vars
+          # above so no ${{ }} expressions appear inside the heredoc.
+          cat > /tmp/release-notes.md << NOTES
+          Automated build from \`main\` — commit ${COMMIT_SHA}
 
           Statically linked (musl) — no runtime dependencies on target machines.
 
@@ -144,10 +144,10 @@ jobs:
           **Stable-name install (always the latest dev build):**
           \`\`\`bash
           curl -Lo /usr/local/bin/mina \\
-            https://github.com/${{ github.repository }}/releases/download/dev/mina-linux-x86_64
+            https://github.com/${REPO}/releases/download/dev/mina-linux-x86_64
           chmod +x /usr/local/bin/mina
           \`\`\`
 
           SHA-256 checksums are attached as \`sha256sums-${SHORT_SHA}.txt\`.
-          EOF
+          NOTES
           gh release edit dev --notes-file /tmp/release-notes.md
