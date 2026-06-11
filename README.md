@@ -35,7 +35,7 @@ PAM session close hook
    │  snapshots: content of each touched file
    │  bundles:  session.json + commands.log + files/
    ▼
-Transport (SSH/rsync or HTTPS — configured at install)
+Transport (SSH/rsync, HTTPS, or local — configured at install)
    │
    ▼
 Nest  (central collector)
@@ -85,7 +85,8 @@ Nest  (central collector)
 
 **On the nest:**
 - Any Linux machine with SSH access and a writable directory, **or**
-- A small HTTP endpoint (if using HTTPS transport)
+- A small HTTP endpoint (if using HTTPS transport), **or**
+- A local directory on the monitored machine itself (if using local transport)
 - No database, no special software
 
 ## Installation
@@ -107,9 +108,10 @@ $EDITOR /etc/mina.toml
 Minimal config:
 ```toml
 [nest]
-transport = "ssh"                        # or "https"
+transport = "ssh"                        # "ssh", "https", or "local"
 ssh_destination = "mina@nest.example.com:/var/mina"
 # https_endpoint = "https://nest.example.com/ingest"
+# local_destination = "/var/mina"        # local: nest on the same machine
 
 [capture]
 text_size_limit_kb = 512                 # skip files larger than this
@@ -180,12 +182,46 @@ A query CLI (`mina-cli`) is on the roadmap.
 |---|---|---|
 | **SSH / rsync** | Agent rsyncs the bundle to the nest over SSH at session close. Uses existing port 22, existing key infrastructure. | Most fleets — no new ports, no new services |
 | **HTTPS POST** | Agent POSTs a tarball to a small HTTP endpoint on the nest. TLS only. | Fleets with strict egress rules, VPNs, or where SSH to a central host is blocked |
+| **Local** | Agent copies the bundle into a local directory and marks every file read-only. No network, no remote host. | Single-machine setups, air-gapped systems, or development / testing without a nest server |
 
-Transport is selected at install time via `mina.toml`. Both can coexist if you have mixed environments.
+Transport is selected at install time via `mina.toml`. Both SSH and HTTPS can coexist if you have mixed environments.
 
 > **VPN / port-blocked environments:** use HTTPS transport. The nest endpoint can sit behind a reverse proxy (nginx, Caddy) on port 443, which passes through virtually all corporate firewalls and VPNs.
 
-## What Mina does not do
+> **Single-machine or air-gapped environments:** use local transport. Bundles land in `/var/mina` (or any configured path) on the same machine, owned by root, read-only. Pair with `logrotate` or a cron job to manage retention.
+
+### Setting up the nest
+
+**SSH transport:**
+```bash
+# On the nest machine
+useradd -m -s /bin/bash mina
+mkdir -p /var/mina
+chown mina:mina /var/mina
+
+# On each monitored machine — deploy a dedicated key
+ssh-keygen -t ed25519 -f /etc/mina/nest_key -N ""
+ssh-copy-id -i /etc/mina/nest_key.pub mina@nest.example.com
+```
+
+**HTTPS transport:**
+```bash
+# On the nest machine
+mina-nest serve --dir /var/mina --port 8765
+# Put it behind nginx/caddy with TLS for production use
+```
+
+**Local transport:**
+```bash
+# No remote setup needed.
+# Mina creates the destination directory automatically.
+# In /etc/mina.toml:
+#   transport = "local"
+#   local_destination = "/var/mina"
+#
+# Verify after a test session:
+ls -lt /var/mina/<hostname>/
+```
 
 - **Real-time alerting** — Mina reports at session close, not live. Use Falco or auditd rules if you need live tripwires.
 - **Binary file capture** — intentionally skipped. Avoids capturing secrets in keystores, large assets, compiled artifacts.
@@ -223,7 +259,8 @@ mina/
     ├── bundle.rs        # session.json + archive assembly
     └── transport/
         ├── ssh.rs       # rsync-based shipper
-        └── https.rs     # HTTP POST shipper
+        ├── https.rs     # HTTP POST shipper
+        └── local.rs     # local filesystem shipper (read-only copy)
 ```
 
 Python contributions welcome for parsing/analysis tooling under `tools/`.

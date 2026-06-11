@@ -7,6 +7,7 @@ use anyhow::Result;
 use std::path::Path;
 
 pub mod https;
+pub mod local;
 pub mod ssh;
 
 /// All transport backends implement this trait.

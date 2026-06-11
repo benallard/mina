@@ -9,6 +9,7 @@ use mina_lib::config::{Config, TransportKind, DEFAULT_CONFIG_PATH};
 use mina_lib::file_capture::{extract_paths, snapshot};
 use mina_lib::pam_hook::{EnvPamSession, SessionState};
 use mina_lib::transport::https::HttpsTransport;
+use mina_lib::transport::local::LocalTransport;
 use mina_lib::transport::ssh::SshTransport;
 use mina_lib::transport::Transport;
 
@@ -276,6 +277,16 @@ fn build_transport(config: &Config) -> Result<Box<dyn Transport>> {
                 .clone()
                 .context("nest.https_endpoint is required when transport = \"https\"")?;
             Ok(Box::new(HttpsTransport { endpoint }))
+        }
+        TransportKind::Local => {
+            let destination = config
+                .nest
+                .local_destination
+                .clone()
+                .context("nest.local_destination is required when transport = \"local\"")?;
+            Ok(Box::new(LocalTransport {
+                destination: destination.into(),
+            }))
         }
     }
 }

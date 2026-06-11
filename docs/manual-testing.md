@@ -10,7 +10,7 @@ Run this runbook before tagging any release.
 ## Prerequisites
 
 - A fresh Debian or Ubuntu VM (virtualbox, KVM, or cloud instance)
-- A second machine or VM to act as the nest
+- A second machine or VM to act as the nest (not needed for local transport tests)
 - SSH access to both
 - The `mina` and `mina-nest` binaries built for the target architecture
 
@@ -23,7 +23,7 @@ sudo cp mina /usr/local/bin/mina
 sudo chmod 755 /usr/local/bin/mina
 
 sudo cp mina.toml.example /etc/mina.toml
-sudo $EDITOR /etc/mina.toml   # set ssh_destination or https_endpoint
+sudo $EDITOR /etc/mina.toml   # set transport + destination (see below)
 ```
 
 Verify the config parses cleanly:
@@ -149,7 +149,55 @@ eventually arrives at the nest.
 
 ---
 
-## 7. HTTPS transport (if configured)
+## 7. Local transport
+
+This test requires only the single VM — no nest machine needed.
+
+Update `/etc/mina.toml`:
+```toml
+[nest]
+transport = "local"
+local_destination = "/var/mina"
+```
+
+Create the destination (Mina creates it automatically, but pre-creating it
+lets you set ownership explicitly):
+```bash
+sudo mkdir -p /var/mina
+sudo chown root:root /var/mina
+sudo chmod 755 /var/mina
+```
+
+Repeat test 3 (login, edit a file, logout).
+
+Verify the bundle appeared locally:
+```bash
+ls -lt /var/mina/<hostname>/
+# Expect: one directory named YYYY-MM-DD_HH-MM-SS_<user>
+
+cat /var/mina/<hostname>/*/session.json
+cat /var/mina/<hostname>/*/commands.log
+```
+
+Verify all captured files are read-only:
+```bash
+ls -la /var/mina/<hostname>/*/files/etc/hostname
+# Expect: -r--r--r-- (444)
+
+# Attempting to write should fail:
+echo "test" >> /var/mina/<hostname>/*/files/etc/hostname
+# Expect: Permission denied
+```
+
+Verify no staging artefacts remain:
+```bash
+ls /var/mina/<hostname>/
+# Expect: only the final bundle directory; no .tmp_ prefixes
+```
+
+---
+
+## 8. HTTPS transport (if configured)
 
 Start the nest server on the nest machine:
 ```bash
@@ -167,7 +215,7 @@ Repeat test 3. Verify the bundle arrives at the nest via HTTP POST.
 
 ---
 
-## 8. Cleanup
+## 9. Cleanup
 
 ```bash
 sudo mina uninstall-pam

@@ -66,7 +66,8 @@ mina/
 │   └── transport/
 │       ├── mod.rs       # Transport trait — all shippers implement this
 │       ├── ssh.rs       # rsync over SSH
-│       └── https.rs     # HTTP POST (TLS only)
+│       ├── https.rs     # HTTP POST (TLS only)
+│       └── local.rs     # Local filesystem copy (read-only, atomic rename)
 
 tools/                   # Python analysis/query tools (not part of core)
 ```

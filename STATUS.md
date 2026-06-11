@@ -21,6 +21,7 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | 6 | Config parsing | `src/config.rs` | ✅ Done | TOML loading with sane defaults, 2 tests |
 | 7 | Transport trait + FakeTransport | `src/transport/mod.rs` | ✅ Done | Ready for integration tests |
 | 8 | SSH/rsync transport | `src/transport/ssh.rs` | 🟡 Partial | Works, retry in `ship_with_retry` (main.rs); no syslog yet |
+| 8b | Local filesystem transport | `src/transport/local.rs` | ✅ Done | Copy + atomic rename + read-only; 3 unit tests |
 | 9 | Shell hook script | `mina.sh.profile` | ✅ Done | Bash + zsh, ms timestamps, safe PROMPT_COMMAND chaining |
 | 10 | CLI entry point (subcommands) | `src/main.rs` | ✅ Done | clap wired; session-open + session-close implemented (Step 2) |
 | 11 | Session state persistence | `src/pam_hook.rs`, `src/main.rs` | ✅ Done | `SessionState` save/load/remove; keyed on sshd PPID |

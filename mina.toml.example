@@ -2,7 +2,7 @@
 # Copy this file to /etc/mina.toml and adjust before running `mina install-pam`.
 
 [nest]
-# Transport backend: "ssh" (default) or "https".
+# Transport backend: "ssh" (default), "https", or "local".
 #
 # ssh   — ships bundles via rsync over SSH. No new ports required.
 #         Requires a key at /etc/mina/nest_key (see README).
@@ -10,6 +10,10 @@
 # https — POSTs a tarball to an HTTP endpoint. Use when port 22 is
 #         blocked or the nest is behind a corporate firewall.
 #         The endpoint MUST be HTTPS; plain HTTP is rejected.
+#
+# local — copies bundles into a local directory and marks them read-only.
+#         No network required. Useful when the nest is on the same machine,
+#         or when testing without a remote endpoint.
 #
 transport = "ssh"
 
@@ -19,6 +23,10 @@ ssh_destination = "mina@nest.example.com:/var/mina"
 
 # HTTPS endpoint (required when transport = "https").
 # https_endpoint = "https://nest.example.com/ingest"
+
+# Local destination (required when transport = "local").
+# The directory is created automatically if it does not exist.
+# local_destination = "/var/mina"
 
 
 [capture]

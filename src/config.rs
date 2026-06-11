@@ -18,7 +18,7 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NestConfig {
-    /// "ssh" or "https"
+    /// "ssh", "https", or "local"
     pub transport: TransportKind,
 
     /// e.g. "mina@nest.example.com:/var/mina"  (SSH transport)
@@ -30,6 +30,10 @@ pub struct NestConfig {
 
     /// e.g. "https://nest.example.com/ingest"  (HTTPS transport)
     pub https_endpoint: Option<String>,
+
+    /// Local directory to copy bundles into, read-only.  (local transport)
+    /// e.g. "/var/mina"
+    pub local_destination: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -37,6 +41,7 @@ pub struct NestConfig {
 pub enum TransportKind {
     Ssh,
     Https,
+    Local,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,10 +86,11 @@ impl Config {
 
 pub const EXAMPLE_CONFIG: &str = r#"
 [nest]
-transport = "ssh"                         # "ssh" or "https"
+transport = "ssh"                         # "ssh", "https", or "local"
 ssh_destination = "mina@nest.example.com:/var/mina"
 ssh_key_path = "/etc/mina/nest_key"
 # https_endpoint = "https://nest.example.com/ingest"
+# local_destination = "/var/mina"         # local transport: copy bundles here, read-only
 
 [capture]
 text_size_limit_kb = 512
