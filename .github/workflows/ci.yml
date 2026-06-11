@@ -102,27 +102,52 @@ jobs:
           echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
 
       - name: Update rolling "dev" pre-release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dev
-          name: "Development build (latest main)"
-          prerelease: true
-          body: |
-            Automated build from `main` — commit ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHORT_SHA="${{ env.SHORT_SHA }}"
 
-            These are **development binaries** built from the tip of `main`.
-            Statically linked (musl) — no runtime dependencies on target machines.
+          # Force-move the dev tag to the current commit.
+          git tag -f dev
+          git push origin refs/tags/dev --force
 
-            | Binary | Purpose |
-            |---|---|
-            | `mina-linux-x86_64` | Agent — install on monitored machines |
-            | `mina-nest-linux-x86_64` | Nest ingest server (HTTPS transport) |
+          # Create the release if it does not exist yet; safe to ignore the
+          # "already exists" error on subsequent runs.
+          gh release create dev \
+            --prerelease \
+            --title "Development build (latest main)" \
+            --notes "Automated build from \`main\` — see attached binaries." \
+            2>/dev/null || true
 
-            **Stable-name install (always the latest dev build):**
-            ```bash
-            curl -Lo /usr/local/bin/mina \
-              https://github.com/${{ github.repository }}/releases/download/dev/mina-linux-x86_64
-            chmod +x /usr/local/bin/mina
-            ```
+          # Upload every artefact, overwriting same-named assets from previous
+          # runs (--clobber).  This is what makes the stable URLs always fresh.
+          gh release upload dev --clobber \
+            "mina-linux-x86_64-${SHORT_SHA}" \
+            "mina-nest-linux-x86_64-${SHORT_SHA}" \
+            "mina-linux-x86_64" \
+            "mina-nest-linux-x86_64" \
+            "sha256sums-${SHORT_SHA}.txt"
 
-            SHA-256 checksums are attached as `sha256sums-<sha>.txt`.
+          # Update the release body with the real commit and install snippet.
+          # Write to a temp file so both GHA expressions (${{ }}) and bash
+          # variables (${SHORT_SHA}) expand correctly without heredoc quoting issues.
+          cat > /tmp/release-notes.md << EOF
+          Automated build from \`main\` — commit ${{ github.sha }}
+
+          Statically linked (musl) — no runtime dependencies on target machines.
+
+          | Binary | Purpose |
+          |---|---|
+          | \`mina-linux-x86_64\` | Agent — install on monitored machines |
+          | \`mina-nest-linux-x86_64\` | Nest ingest server (HTTPS transport) |
+
+          **Stable-name install (always the latest dev build):**
+          \`\`\`bash
+          curl -Lo /usr/local/bin/mina \\
+            https://github.com/${{ github.repository }}/releases/download/dev/mina-linux-x86_64
+          chmod +x /usr/local/bin/mina
+          \`\`\`
+
+          SHA-256 checksums are attached as \`sha256sums-${SHORT_SHA}.txt\`.
+          EOF
+          gh release edit dev --notes-file /tmp/release-notes.md
