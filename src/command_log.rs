@@ -45,6 +45,10 @@ pub trait CommandSource {
 ///
 /// The file lives at /run/mina/<session_id>.cmds and is created by
 /// mina's shell snippet injected via /etc/profile.d/mina.sh.
+///
+/// The shell hook resolves which session key to use at login time (handling
+/// OpenSSH privsep by checking the grandparent PID), so by the time this
+/// source is called the file is always named after the session key.
 pub struct ShellHookSource {
     pub log_dir: std::path::PathBuf,
 }

@@ -2,22 +2,37 @@
 # /etc/profile.d/mina.sh
 # Injected by `mina install-pam`. Do not edit by hand.
 #
-# Logs each command to /run/mina/<ppid>.cmds in the format:
+# Logs each command to /run/mina/<session_key>.cmds in the format:
 #   <unix_timestamp_ms>\t<command>
 #
-# The file key is $PPID (the sshd child PID), which is the same value
-# used as the session key by `mina session-open` and `mina session-close`.
-# This makes all three processes agree on the session identifier without
-# any extra IPC.
+# Use `return` (not `exit`) — this file is sourced, not executed.
+# `exit` would terminate the user's login shell.
 #
 # The file is harvested by `mina session-close` (via PAM) at logout.
 # Supports bash and zsh. Other shells fall back silently (no logging).
 
 _mina_log_dir="/run/mina"
-_mina_log_file="${_mina_log_dir}/${PPID}.cmds"
 
-# Ensure the log directory exists (created by mina at boot via tmpfiles.d)
-[ -d "$_mina_log_dir" ] || exit 0
+[ -d "$_mina_log_dir" ] || return 0
+
+# Resolve the session key — the PID written into /run/mina/<key>.session by
+# `mina session-open`.  Under modern OpenSSH with privilege separation,
+# pam_exec runs in a monitor process (the shell's grandparent), not the
+# direct parent.  We try $PPID first (simple case), then the parent of $PPID
+# (privsep case).  One /proc read; no loop.
+_mina_session_key=""
+_mina_gppid=$(awk '{print $4}' "/proc/${PPID}/stat" 2>/dev/null)
+for _mina_k in "$PPID" "$_mina_gppid"; do
+    [ -n "$_mina_k" ] || continue
+    [ -f "${_mina_log_dir}/${_mina_k}.session" ] || continue
+    _mina_session_key="$_mina_k"
+    break
+done
+unset _mina_gppid _mina_k
+
+[ -n "$_mina_session_key" ] || return 0
+
+_mina_log_file="${_mina_log_dir}/${_mina_session_key}.cmds"
 
 if [ -n "$BASH_VERSION" ]; then
     _mina_log_command() {
