@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -151,3 +152,71 @@ jobs:
           SHA-256 checksums are attached as \`sha256sums-${SHORT_SHA}.txt\`.
           NOTES
           gh release edit dev --notes-file /tmp/release-notes.md
+
+  # ── Stable release for version tags ───────────────────────────────────────
+  # Fires when a v* tag is pushed (e.g. v0.2.0).  Builds the same static
+  # musl binaries, extracts the matching section from CHANGES.md as the
+  # release body, and publishes a proper (non-prerelease) GitHub Release.
+  publish-release:
+    name: Publish release
+    needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain + musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.MUSL_TARGET }}
+
+      - name: Install musl-tools
+        run: sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry + build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-musl-
+
+      - name: Build static release binaries (musl)
+        run: |
+          cargo build --release --target ${{ env.MUSL_TARGET }} \
+            --bin mina --bin mina-nest
+
+      - name: Prepare artefacts
+        run: |
+          BINDIR=target/${{ env.MUSL_TARGET }}/release
+          TAG="${{ github.ref_name }}"
+
+          cp "$BINDIR/mina"      "mina-linux-x86_64"
+          cp "$BINDIR/mina-nest" "mina-nest-linux-x86_64"
+          sha256sum mina-linux-x86_64 mina-nest-linux-x86_64 > sha256sums.txt
+
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+
+      - name: Extract release notes from CHANGES.md
+        run: |
+          # Pull the block between the first ## heading and the second one.
+          awk '/^## \[/{if(found) exit; found=1; next} found' CHANGES.md \
+            | sed '/^---$/d' \
+            > release-notes.md
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ env.TAG }}" \
+            --title "${{ env.TAG }}" \
+            --notes-file release-notes.md \
+            mina-linux-x86_64 \
+            mina-nest-linux-x86_64 \
+            sha256sums.txt
