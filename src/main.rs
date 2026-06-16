@@ -450,14 +450,35 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
         .filter(|p| seen.insert(p.clone()))
         .collect();
 
-    // 4. Snapshot each candidate (text detection + size limit + skip list)
+    // 4. Build the effective skip list: user-configured paths plus any
+    //    directories mina itself owns, so that it never snapshots its own
+    //    artefacts (previous bundles, staging area) without the user needing
+    //    to know about these paths.
+    //
+    //    - local_destination: the nest directory on this machine.  When a user
+    //      browses past sessions during a session, mina would otherwise capture
+    //      previous commands.log / session.json files into the new bundle.
+    //    - staging_dir: the temporary assembly area.  Excluded defensively in
+    //      case the user configured it outside /tmp.
+    //    - run_dir (/run/mina): where live .session and .cmds files sit; never
+    //      interesting to capture.
+    let mut skip_paths = config.capture.skip_paths.clone();
+    if config.nest.transport == TransportKind::Local {
+        if let Some(ref dest) = config.nest.local_destination {
+            skip_paths.push(std::path::PathBuf::from(dest));
+        }
+    }
+    skip_paths.push(config.staging_dir.clone());
+    skip_paths.push(run_dir.to_path_buf());
+
+    // 5. Snapshot each candidate (text detection + size limit + skip list)
     let captures: Vec<_> = candidate_paths
         .into_iter()
         .map(|path| {
             let outcome = snapshot(
                 &path,
                 config.capture.text_size_limit_kb,
-                &config.capture.skip_paths,
+                &skip_paths,
             );
             (path, outcome)
         })
