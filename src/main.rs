@@ -475,11 +475,7 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
     let captures: Vec<_> = candidate_paths
         .into_iter()
         .map(|path| {
-            let outcome = snapshot(
-                &path,
-                config.capture.text_size_limit_kb,
-                &skip_paths,
-            );
+            let outcome = snapshot(&path, config.capture.text_size_limit_kb, &skip_paths);
             (path, outcome)
         })
         .collect();
