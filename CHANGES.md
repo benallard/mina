@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — 0.3.0-dev
+
+_Nothing yet._
+
+---
+
 ## [0.2.0] — 2026-06-16
 
 ### Fixed
