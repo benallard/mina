@@ -342,6 +342,18 @@ fn cmd_install_audit() -> Result<()> {
 }
 
 fn cmd_session_open() -> Result<()> {
+    // pam_exec invokes every session module for *both* pam_open_session and
+    // pam_close_session.  Guard against being called in the wrong phase so
+    // that session-close (which runs in the same stack) does not immediately
+    // consume and delete the state file we just wrote.
+    //
+    // PAM_TYPE is set by pam_exec:
+    //   open_session  → we should act
+    //   close_session → skip (session-close will handle it)
+    if std::env::var("PAM_TYPE").as_deref() == Ok("close_session") {
+        return Ok(());
+    }
+
     let run_dir = Path::new(RUN_DIR);
     if !run_dir.exists() {
         // /run/mina is created by tmpfiles.d at boot.
@@ -364,6 +376,17 @@ fn cmd_session_open() -> Result<()> {
 }
 
 fn cmd_session_close() -> Result<()> {
+    // pam_exec invokes every session module for *both* pam_open_session and
+    // pam_close_session.  Guard against being called in the open phase so
+    // that we do not consume the state file before the shell session starts.
+    //
+    // PAM_TYPE is set by pam_exec:
+    //   close_session → we should act
+    //   open_session  → skip (session-open already handled it)
+    if std::env::var("PAM_TYPE").as_deref() == Ok("open_session") {
+        return Ok(());
+    }
+
     let run_dir = Path::new(RUN_DIR);
 
     let key = match session_key() {
