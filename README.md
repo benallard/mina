@@ -190,38 +190,6 @@ Transport is selected at install time via `mina.toml`. Both SSH and HTTPS can co
 
 > **Single-machine or air-gapped environments:** use local transport. Bundles land in `/var/mina` (or any configured path) on the same machine, owned by root, read-only. Pair with `logrotate` or a cron job to manage retention.
 
-### Setting up the nest
-
-**SSH transport:**
-```bash
-# On the nest machine
-useradd -m -s /bin/bash mina
-mkdir -p /var/mina
-chown mina:mina /var/mina
-
-# On each monitored machine — deploy a dedicated key
-ssh-keygen -t ed25519 -f /etc/mina/nest_key -N ""
-ssh-copy-id -i /etc/mina/nest_key.pub mina@nest.example.com
-```
-
-**HTTPS transport:**
-```bash
-# On the nest machine
-mina-nest serve --dir /var/mina --port 8765
-# Put it behind nginx/caddy with TLS for production use
-```
-
-**Local transport:**
-```bash
-# No remote setup needed.
-# Mina creates the destination directory automatically.
-# In /etc/mina.toml:
-#   transport = "local"
-#   local_destination = "/var/mina"
-#
-# Verify after a test session:
-ls -lt /var/mina/<hostname>/
-```
 
 - **Real-time alerting** — Mina reports at session close, not live. Use Falco or auditd rules if you need live tripwires.
 - **Binary file capture** — intentionally skipped. Avoids capturing secrets in keystores, large assets, compiled artifacts.
@@ -231,7 +199,13 @@ ls -lt /var/mina/<hostname>/
 ## Security considerations
 
 - The Mina agent runs as root (required for PAM hooks). The binary should be owned root, mode 755, and verified via checksum after install.
-- The nest SSH key should be **write-only** (restrict to `rsync --server` in `authorized_keys`). Mina never needs to read from the nest.
+- The nest SSH key should be **write-only**. Mina never needs to read from the nest. Enforce this in `~mina/.ssh/authorized_keys` with a forced command:
+
+  ```
+  command="rsync --server -vlogDtpre.iLsfxCIvu . /var/mina/",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... mina@agent
+  ```
+
+  The `command=` prefix means SSH will only ever execute that exact rsync invocation, regardless of what the connecting agent requests. The restriction flags (`no-port-forwarding` etc.) close any remaining escape hatches. With this in place, a compromised agent key can push new bundles but cannot read existing ones, cannot open a shell, and cannot tunnel traffic through the nest.
 - Session bundles may contain sensitive file contents. Secure the nest accordingly — treat it like a backup server.
 - Mina does not capture passwords typed at prompts (auditd's `log_passwd=off` default is preserved).
 
