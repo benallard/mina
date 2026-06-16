@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "mina"
-version = "0.2.0-dev"
+version = "0.2.0"
 edition = "2021"
 description = "Passive SSH session auditor — watches, records, reports"
 license = "MIT"

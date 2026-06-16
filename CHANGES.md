@@ -5,9 +5,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased] — 0.2.0-dev
+## [0.2.0] — 2026-06-16
 
-_Nothing yet._
+### Fixed
+
+- **`PAM_TYPE` guard in `session-open` / `session-close`** — `pam_exec`
+  invokes every session module for *both* the open and close phases of a PAM
+  session. Without a guard, `mina session-close` fired at login time (open
+  phase), immediately consumed the `.session` file written by
+  `mina session-open`, and deleted it before the user's shell started. The
+  result was that `/run/mina` appeared silently empty for the entire session
+  even though PAM was configured correctly. Both commands now check
+  `$PAM_TYPE` and return early when called in the wrong phase (`open_session`
+  for `session-close`, `close_session` for `session-open`).
+  See `docs/troubleshooting.md § 4d` for the full diagnosis.
+
+- **Shell hook: grandparent PID lookup for OpenSSH privsep** (`mina.sh.profile`) —
+  In modern OpenSSH with privilege separation, `pam_exec` runs in a monitor
+  process that is the shell's *grandparent*, not its direct parent. The shell
+  hook wrote `$PPID.cmds`, but `mina session-open` recorded the monitor's PID
+  as the session key. The two never matched, so every bundle shipped with an
+  empty command log. The hook now reads `/proc/$PPID/stat` (one read, no loop)
+  to get the grandparent PID, then tries both `$PPID` and the grandparent as
+  candidate session keys, taking whichever has a matching `.session` file.
+
+- **Shell hook: `exit 0` → `return 0`** (`mina.sh.profile`) — The hook is a
+  sourced `/etc/profile.d/` script. Using `exit` instead of `return` would
+  terminate the user's login shell if `/run/mina` was absent. Fixed to
+  `return 0`.
+
+- **Auto-skip mina's own directories at capture time** (`main.rs`) — When
+  using local transport, browsing the nest directory during a session caused
+  mina to snapshot its own previous bundles into the new one. Mina now
+  automatically adds `local_destination`, `staging_dir`, and `/run/mina` to
+  the effective skip list at pipeline time, regardless of what `skip_paths` is
+  set to in the config. No user action required.
+
+### Changed
+
+- **Remove unused direct dependencies `thiserror` and `tracing`** — neither
+  crate is referenced in the source. `thiserror` was never used; `tracing` is
+  a transitive dependency of `tracing-subscriber`, which remains. Removing
+  them allows the package to build entirely from Debian's `librust-*-dev`
+  packages without network access.
+  (patch by Benoît Allard)
+
+### Documentation
+
+- **`docs/troubleshooting.md`** — new guide covering every layer of the
+  stack from `/run/mina` missing through PAM hooks, `pam-auth-update`,
+  `UsePAM`, the `pam_exec` dual-phase bug, the OpenSSH privsep PID mismatch,
+  and the shell hook, with a quick-start symptom table and a diagnostic
+  checklist.
 
 ---
 
