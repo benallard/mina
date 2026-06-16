@@ -12,7 +12,8 @@ or `.cmds` files are ever written to `/run/mina`.
 | `/run/mina` exists but is **always empty**, even during an active session | [Step 2](#step-2--are-the-pam-hooks-active) — PAM hooks not firing |
 | `/usr/share/pam-configs/mina` exists but no mina lines in `common-session` | [Step 2a](#2a--debian-package-install-pam-auth-update) — `pam-auth-update` not run |
 | PAM config looks right, manual test works, but `/run/mina` is always empty | [Step 4d](#4d--pam_exec-calls-session-close-during-login-deleting-the-state-file-immediately) — `pam_exec` phase bug |
-| `/run/mina/<ppid>.session` appears but no `.cmds` file | [Step 5](#step-5--is-the-shell-hook-installed-and-active) — shell hook missing or inactive |
+| `.session` file present but `.cmds` file has a different name (different PID) | [Step 5](#step-5--is-the-shell-hook-installed-and-active) — OpenSSH privsep PID mismatch |
+| `/run/mina/<ppid>.session` appears but no `.cmds` file at all | [Step 5](#step-5--is-the-shell-hook-installed-and-active) — shell hook missing or inactive |
 | Files appear in `/run/mina` but no bundle lands at the nest | [Step 6](#step-6--does-etcminatoml-exist-and-parse-correctly) — config or transport problem |
 
 Work through the sections in order — each one rules out a layer of the stack.
@@ -334,7 +335,7 @@ transport) but the `.session` file is **always** cleaned up, even on failure.
 In a real login, `quiet` suppresses this error to the user's terminal, making
 the directory appear silently empty.
 
-**Fix:** Mina v0.x.y and earlier did not check `PAM_TYPE`. Versions that
+**Fix:** Mina v0.1.0 and earlier did not check `PAM_TYPE`. Versions that
 include the fix guard each command with an early return:
 
 ```rust
@@ -478,6 +479,10 @@ local_destination = "/var/mina"
 text_size_limit_kb = 512
 skip_paths = ["/proc", "/sys", "/dev", "/tmp", "/run"]
 ```
+
+> Mina automatically skips its own `local_destination`, `staging_dir`, and
+> `/run/mina` at capture time, so previous bundles are never snapshotted into
+> new ones even if a user browses the nest during a session.
 
 ---
 
