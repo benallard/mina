@@ -29,7 +29,7 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | 13 | `install-pam` / `uninstall-pam` | `src/main.rs` | ✅ Done | pam_exec block (idempotent), profile.d copy, tmpfiles.d, config bootstrap |
 | 14 | HTTPS transport | `src/transport/https.rs` | ❌ Stub | `bail!("not yet implemented")` |
 | 15 | Nest ingest server | `src/nest.rs` | ❌ Stub | `println!("not yet implemented")` |
-| 16 | Auditd source | `src/command_log.rs` | ❌ Stub | `bail!("not yet implemented")` |
+| 16 | Auditd source | `src/command_log.rs` | ❌ Stub | `bail!("not yet implemented")`. Until it lands, sessions without a login shell (`ssh host cmd`, scp, sftp) record no commands; their `session.json` says `"shell_hook": false` (#1) |
 | 17 | Tier 2 integration tests | `tests/` | ❌ Missing | Directory does not exist |
 | 18 | Config validation | `src/config.rs` | ❌ Missing | No TLS enforcement, no cross-field checks |
 
@@ -67,7 +67,7 @@ Work items in priority order. Check them off as they land.
 - [ ] **Step 8** — `Config::validate()` — TLS scheme enforcement, cross-field checks (Q9)
 - [ ] **Step 9** — `HttpsTransport`: tarball creation + ureq/curl POST
 - [ ] **Step 10** — `src/nest.rs`: minimal HTTP ingest server (TLS terminated by reverse proxy)
-- [ ] **Step 11** — `AuditdSource`: `ausearch` integration
+- [ ] **Step 11** — `AuditdSource`: `ausearch` integration, scoped by the audit session id (`ses=`), so sessions without a shell record commands too (#1)
 - [ ] **Step 12** — Pre-release: run manual testing runbook (`docs/manual-testing.md`), tag `v0.1.0`
 
 ---

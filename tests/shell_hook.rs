@@ -167,6 +167,31 @@ fn logs_only_commands_that_ran() {
 }
 
 #[test]
+fn hook_creates_log_before_the_first_command() {
+    if !have_bash() {
+        eprintln!("bash not found, skipping");
+        return;
+    }
+    // `session.json` reports `shell_hook: true` when `<key>.cmds` exists,
+    // also for a login where no command ran.
+    let dir = tempfile::tempdir().unwrap();
+    let key = std::process::id();
+    write_session(dir.path(), key);
+    run_bash(
+        dir.path(),
+        "systemctl status
+",
+        &[],
+        "exit
+",
+        &[],
+    );
+    let log = dir.path().join(format!("{key}.cmds"));
+    assert!(log.is_file());
+    assert!(read_cmds(dir.path(), key).is_empty());
+}
+
+#[test]
 fn histcontrol_ignoreboth_logs_nothing_false() {
     if !have_bash() {
         eprintln!("bash not found, skipping");

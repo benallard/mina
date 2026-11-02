@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — 0.3.0-dev
 
+### Added
+
+- **`tty` and `shell_hook` in `session.json`** (#1, first step) —
+  `ssh host cmd`, scp and sftp start no login shell, so the shell hook
+  never loads and their bundles have an empty `commands.log`. Such a
+  bundle now says so: `shell_hook` is `false` when no shell loaded the
+  hook, and `true` when one did, even if no command ran. `tty` is
+  `PAM_TTY` at session open (`null` when unset or empty). It names the
+  terminal for a console login (`tty1`), but sshd on Linux always reports
+  `ssh` (OpenSSH sets it before any pty exists), so it does not tell
+  interactive SSH sessions apart. Commands of sessions without a shell
+  are not recorded until the auditd command source exists. State files
+  and bundles from mina <= 0.2 lack both fields and still load.
+
 ### Fixed
 
 - **Relative paths are resolved in the user's working directory** (#3) —
