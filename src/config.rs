@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -37,9 +37,66 @@ pub struct NestConfig {
     /// e.g. "https://nest.example.com/ingest"  (HTTPS transport)
     pub https_endpoint: Option<String>,
 
+    /// Client certificate (PEM, full chain leaf first) presented to the
+    /// nest — mutual TLS. Set together with `https_client_key`, or neither.
+    #[serde(default)]
+    pub https_client_cert: Option<PathBuf>,
+
+    /// Unencrypted private key (PEM) of `https_client_cert`.
+    #[serde(default)]
+    pub https_client_key: Option<PathBuf>,
+
+    /// CA certificate(s) (PEM) to verify the nest with, instead of the
+    /// system CA store.
+    #[serde(default)]
+    pub https_ca_cert: Option<PathBuf>,
+
     /// Local directory to copy bundles into, read-only.  (local transport)
     /// e.g. "/var/mina"
     pub local_destination: Option<String>,
+}
+
+/// The validated `https_*` keys of `[nest]`, for the HTTPS transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpsSettings {
+    pub endpoint: String,
+    /// `Some` exactly when `client_key` is `Some`.
+    pub client_cert: Option<PathBuf>,
+    pub client_key: Option<PathBuf>,
+    pub ca_cert: Option<PathBuf>,
+}
+
+impl NestConfig {
+    /// Validate the `https_*` keys. Called only when `transport = "https"`,
+    /// so leftover keys never break another transport. Paths are not
+    /// checked for existence: the transport reads them on every ship.
+    pub fn https_settings(&self) -> Result<HttpsSettings> {
+        let endpoint = self
+            .https_endpoint
+            .clone()
+            .context("nest.https_endpoint is required when transport = \"https\"")?;
+        let uri: ureq::http::Uri = endpoint
+            .parse()
+            .with_context(|| format!("nest.https_endpoint {endpoint:?} is not a valid URL"))?;
+        if !uri
+            .scheme_str()
+            .is_some_and(|s| s.eq_ignore_ascii_case("https"))
+        {
+            bail!("nest.https_endpoint {endpoint:?} must start with https://");
+        }
+        if uri.host().is_none_or(str::is_empty) {
+            bail!("nest.https_endpoint {endpoint:?} has no host");
+        }
+        if self.https_client_cert.is_some() != self.https_client_key.is_some() {
+            bail!("nest.https_client_cert and nest.https_client_key must be set together");
+        }
+        Ok(HttpsSettings {
+            endpoint,
+            client_cert: self.https_client_cert.clone(),
+            client_key: self.https_client_key.clone(),
+            ca_cert: self.https_ca_cert.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,6 +198,9 @@ transport = "ssh"                         # "ssh", "https", or "local"
 ssh_destination = "mina@nest.example.com:/var/mina"
 ssh_key_path = "/etc/mina/nest_key"
 # https_endpoint = "https://nest.example.com/ingest"
+# https_client_cert = "/etc/mina/client.crt"  # mTLS: PEM chain, leaf first; with the key
+# https_client_key  = "/etc/mina/client.key"  # unencrypted PEM key
+# https_ca_cert     = "/etc/mina/nest-ca.crt" # verify the nest with this CA, not the system store
 # local_destination = "/var/mina"         # local transport: copy bundles here, read-only
 
 [capture]
@@ -246,5 +306,114 @@ mod tests {
         "#;
         let config: Config = toml::from_str(minimal).unwrap();
         assert!(config.capture.skip_paths.contains(&PathBuf::from("/proc")));
+    }
+
+    // ── https_settings ──────────────────────────────────────────────────
+
+    /// Parse a `[nest]` table body (transport = "https" is prepended).
+    fn nest(body: &str) -> NestConfig {
+        let text = format!("[nest]\ntransport = \"https\"\n{body}\n[capture]\n");
+        toml::from_str::<Config>(&text).unwrap().nest
+    }
+
+    fn err(body: &str) -> String {
+        format!("{:#}", nest(body).https_settings().unwrap_err())
+    }
+
+    #[test]
+    fn https_settings_requires_endpoint() {
+        assert!(err("").contains("https_endpoint"));
+    }
+
+    #[test]
+    fn https_settings_rejects_plain_http() {
+        assert!(err(r#"https_endpoint = "http://nest.example.com/ingest""#).contains("https://"));
+    }
+
+    #[test]
+    fn endpoint_scheme_is_case_insensitive() {
+        assert!(
+            nest(r#"https_endpoint = "HTTPS://nest.example.com/ingest""#)
+                .https_settings()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn endpoint_without_host_rejected() {
+        for endpoint in ["https://", "https:///ingest"] {
+            let body = format!("https_endpoint = \"{endpoint}\"");
+            assert!(nest(&body).https_settings().is_err(), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn https_settings_rejects_cert_without_key() {
+        let e = err(r#"
+            https_endpoint = "https://nest.example.com/ingest"
+            https_client_cert = "/etc/mina/client.crt"
+        "#);
+        assert!(
+            e.contains("https_client_cert") && e.contains("https_client_key"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn https_settings_rejects_key_without_cert() {
+        let e = err(r#"
+            https_endpoint = "https://nest.example.com/ingest"
+            https_client_key = "/etc/mina/client.key"
+        "#);
+        assert!(
+            e.contains("https_client_cert") && e.contains("https_client_key"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn https_settings_accepts_mtls() {
+        let settings = nest(
+            r#"
+            https_endpoint = "https://nest.example.com/ingest"
+            https_client_cert = "/etc/mina/client.crt"
+            https_client_key = "/etc/mina/client.key"
+            https_ca_cert = "/etc/mina/nest-ca.crt"
+        "#,
+        )
+        .https_settings()
+        .unwrap();
+        assert_eq!(
+            settings,
+            HttpsSettings {
+                endpoint: "https://nest.example.com/ingest".to_owned(),
+                client_cert: Some(PathBuf::from("/etc/mina/client.crt")),
+                client_key: Some(PathBuf::from("/etc/mina/client.key")),
+                ca_cert: Some(PathBuf::from("/etc/mina/nest-ca.crt")),
+            }
+        );
+    }
+
+    #[test]
+    fn https_settings_accepts_no_client_cert() {
+        let settings = nest(r#"https_endpoint = "https://nest.example.com/ingest""#)
+            .https_settings()
+            .unwrap();
+        assert_eq!(settings.client_cert, None);
+        assert_eq!(settings.client_key, None);
+        assert_eq!(settings.ca_cert, None);
+    }
+
+    #[test]
+    fn stray_https_keys_do_not_break_load() {
+        let text = r#"
+            [nest]
+            transport = "ssh"
+            ssh_destination = "mina@host:/var/mina"
+            https_endpoint = "http://x"
+            https_client_cert = "/etc/mina/client.crt"
+            [capture]
+        "#;
+        assert!(toml::from_str::<Config>(text).is_ok());
     }
 }
