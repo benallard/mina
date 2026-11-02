@@ -21,23 +21,49 @@ _mina_log_dir="/run/mina"
 [ -d "$_mina_log_dir" ] || return 0
 
 # Resolve the session key — the PID written into /run/mina/<key>.session by
-# `mina session-open`.  Under modern OpenSSH with privilege separation,
-# pam_exec runs in a monitor process (the shell's grandparent), not the
-# direct parent.  We try $PPID first (simple case), then the parent of $PPID
-# (privsep case).  One /proc read; no loop.
+# `mina session-open`: the process that ran pam_exec for the login (sshd,
+# login). It is an ancestor of this shell, but not always the parent: under
+# OpenSSH privilege separation it is the grandparent, and a `su -` or
+# `sudo -i` shell (which opens no session of its own) sits further down.
+# Walk up /proc/<pid>/stat from $PPID to the nearest ancestor that has a
+# .session file; stop at PID 1, after 16 steps, or on any read error.
+# Builtins only (no fork per step).
 _mina_session_key=""
-_mina_gppid=$(awk '{print $4}' "/proc/${PPID}/stat" 2>/dev/null)
-for _mina_k in "$PPID" "$_mina_gppid"; do
-    [ -n "$_mina_k" ] || continue
-    [ -f "${_mina_log_dir}/${_mina_k}.session" ] || continue
-    _mina_session_key="$_mina_k"
-    break
+_mina_pid=$PPID
+_mina_depth=0
+while [ "$_mina_depth" -lt 16 ]; do
+    case $_mina_pid in
+        '' | *[!0-9]* | 0 | 1) break ;;
+    esac
+    if [ -f "${_mina_log_dir}/${_mina_pid}.session" ]; then
+        _mina_session_key=$_mina_pid
+        break
+    fi
+    # "pid (comm) state ppid ...": comm may contain spaces and parens, so
+    # cut at the last ')' and take the second field after it.
+    _mina_stat=""
+    read -r _mina_stat 2>/dev/null <"/proc/${_mina_pid}/stat" || break
+    _mina_stat=${_mina_stat##*)}
+    _mina_stat=${_mina_stat# }
+    _mina_stat=${_mina_stat#* }
+    _mina_pid=${_mina_stat%% *}
+    _mina_depth=$((_mina_depth + 1))
 done
-unset _mina_gppid _mina_k
+unset _mina_pid _mina_depth _mina_stat
 
 [ -n "$_mina_session_key" ] || return 0
 
 _mina_log_file="${_mina_log_dir}/${_mina_session_key}.cmds"
+
+# Create the log from the login shell, so it belongs to the session user:
+# a nested `sudo -i` shell appending first would otherwise leave a file
+# the user's own shell cannot write. A nested shell that cannot write it
+# (`su - otheruser`) does not log.
+[ -e "$_mina_log_file" ] || { true >>"$_mina_log_file"; } 2>/dev/null
+[ -w "$_mina_log_file" ] || {
+    unset _mina_session_key _mina_log_file
+    return 0
+}
 
 if [ -n "$BASH_VERSION" ]; then
     # PROMPT_COMMAND runs after the command, when $PWD may already have
