@@ -3,7 +3,7 @@
 /// Responsibility: extract candidate file paths from commands, detect
 /// whether a file is text, snapshot its content.
 /// This module does not know about sessions, bundles, or transport.
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // ── Path extraction ───────────────────────────────────────────────────────
 
@@ -60,6 +60,41 @@ fn looks_like_path(token: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Turn a candidate from `extract_paths` into the absolute path to snapshot.
+///
+/// `cwd` is the directory the command ran in, if known. Absolute candidates
+/// are kept; relative ones are joined with an absolute `cwd`. Without one,
+/// a relative candidate is dropped (`None`) rather than resolved against
+/// mina's own working directory, which is unrelated to the user's shell.
+///
+/// The result is normalised lexically (`.` and `..` removed), so that
+/// `skip_paths` and the mirrored layout under `files/` see the actual
+/// location. Symlinks are not resolved.
+pub fn resolve_candidate(candidate: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        cwd.filter(|c| c.is_absolute())?.join(candidate)
+    };
+    Some(normalise(&joined))
+}
+
+/// Lexically remove `.` and `..` components from an absolute path.
+/// `..` at the root stays at the root, as it does in the kernel.
+fn normalise(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 // ── Text detection ────────────────────────────────────────────────────────
@@ -173,6 +208,60 @@ mod tests {
     fn accepts_relative_paths() {
         let paths = extract_paths("vim ./config/settings.yml");
         assert_eq!(paths, vec![PathBuf::from("./config/settings.yml")]);
+    }
+
+    // ── resolve_candidate ──
+
+    #[test]
+    fn absolute_candidate_is_kept() {
+        let resolved = resolve_candidate(Path::new("/etc/hosts"), Some(Path::new("/root")));
+        assert_eq!(resolved, Some(PathBuf::from("/etc/hosts")));
+        let resolved = resolve_candidate(Path::new("/etc/hosts"), None);
+        assert_eq!(resolved, Some(PathBuf::from("/etc/hosts")));
+    }
+
+    #[test]
+    fn relative_candidate_is_joined_with_cwd() {
+        let cwd = Some(Path::new("/etc"));
+        assert_eq!(
+            resolve_candidate(Path::new("./debian_version"), cwd),
+            Some(PathBuf::from("/etc/debian_version"))
+        );
+        assert_eq!(
+            resolve_candidate(Path::new("nginx/nginx.conf"), cwd),
+            Some(PathBuf::from("/etc/nginx/nginx.conf"))
+        );
+        assert_eq!(
+            resolve_candidate(Path::new("../var/log/syslog"), cwd),
+            Some(PathBuf::from("/var/log/syslog"))
+        );
+    }
+
+    #[test]
+    fn relative_candidate_without_cwd_is_dropped() {
+        assert_eq!(resolve_candidate(Path::new("./debian_version"), None), None);
+        assert_eq!(resolve_candidate(Path::new("nginx/nginx.conf"), None), None);
+    }
+
+    #[test]
+    fn relative_cwd_is_not_trusted() {
+        let cwd = Some(Path::new("etc"));
+        assert_eq!(resolve_candidate(Path::new("./debian_version"), cwd), None);
+    }
+
+    #[test]
+    fn resolved_path_is_normalised() {
+        assert_eq!(
+            resolve_candidate(
+                Path::new("../../../etc/./hosts"),
+                Some(Path::new("/home/alice"))
+            ),
+            Some(PathBuf::from("/etc/hosts"))
+        );
+        assert_eq!(
+            resolve_candidate(Path::new("/etc/nginx/../hosts"), None),
+            Some(PathBuf::from("/etc/hosts"))
+        );
     }
 
     // ── is_text_file ──
