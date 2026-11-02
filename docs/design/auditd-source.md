@@ -14,19 +14,107 @@ The kernel audit subsystem sees every `execve`, whatever started it. This
 design adds an `AuditdSource` that reads those records, limited to one
 login session, and uses it for sessions in which no shell loaded the hook.
 
+Those sessions are often the ones that change files on a server
+(configuration management, deploys, scp uploads). The audit trail Mina
+promises is missing exactly where it matters most.
+
+## Goals, non-goals, anti-goals
+
+**Goals**
+
+- `ssh host cmd`, scp and sftp sessions get the programs they ran in
+  `commands.log`, with timestamp and working directory.
+- Commands run after `su`/`sudo -i` inside such a session are included.
+- Every bundle says where its commands came from, and if none were
+  recorded, why (`command_source`, `audit_status`).
+- Hosts without auditd behave exactly as today.
+- Setting it up and removing it is one command each, and leaves nothing
+  behind.
+
+**Non-goals (this step)**
+
+- Capturing the files that scp/sftp uploads write (§5; follow-up).
+- Changing what interactive sessions record: they keep the shell hook.
+- Recording the effective user per command (follow-up).
+- Supporting hosts where audit logs are only forwarded, not written
+  locally, or rotated with compression.
+
+**Anti-goals** (would make this a failure even if it works)
+
+- Logins or logouts that hang or fail because of auditd or mina.
+- Keystroke recording (`pam_tty_audit`) or anything else that moves Mina
+  towards surveillance.
+- Capturing files no one in the session meant to touch (package scripts,
+  motd helpers): a false positive, which AGENTS.md rules out.
+- Interactive bundles that become one line per program and lose the
+  commands as typed.
+- A runtime dependency on `ausearch` or any other tool on monitored hosts.
+- Changing global audit settings an admin or the distribution chose.
+
+## Constraints
+
+From AGENTS.md (hard constraints), and from the task:
+
+- Single static binary, no runtime dependencies; auditd is optional.
+- PAM open/close is the session boundary; capture at session close, not
+  live.
+- No database, no new ports.
+- Conservative path extraction: a missed file is acceptable, a wrong one
+  is not.
+- Rust stable, no `async`, no `unwrap()` in production paths, no `unsafe`.
+- Module boundaries: `pam_hook` records session metadata, `command_log`
+  owns the command stream and its files in `/run/mina`, `file_capture`
+  knows nothing about sessions, `bundle` only assembles.
+- CI: `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check` on a
+  stock runner, without auditd, PAM or root.
+- Public material (fixtures, docs) names no real hosts, users or
+  addresses.
+- Never block the user's shell exit; errors are logged, not propagated.
+
 ## Summary of the decisions
 
-| Topic | Decision |
-|---|---|
-| Scoping | Audit session id (`ses=`) from `pam_loginuid`, read from `/proc/self/sessionid` at `session-open` |
-| Rules | Static rules: `execve`/`execveat`, b64 + b32, `auid!=unset`, `success=1`, key `mina`. In `/etc/audit/rules.d/50-mina.rules` |
-| Who installs the rules | `mina install-pam` when auditd is present, `mina install-audit` on its own; `uninstall-pam` / new `uninstall-audit` remove them |
-| Reading | Parse the raw audit log in Rust. No `ausearch` at runtime |
-| Which source | Shell hook when it attached, auditd otherwise. New `command_source` field |
-| File capture | From auditd commands only for the write-verb list in AGENTS.md. Files written by sftp-server are out of scope |
-| Fallback | No auditd, no rules or no session id: behave as today, and say why in `session.json` |
-| Packaging | `Suggests: auditd`, not `Recommends` (see the note at the end) |
-| `pam_tty_audit` | Dropped from `install-audit`: it records keystrokes |
+Who decided: **brief** = set by the maintainer in the task for this
+design; **my call** = proposed here, for review.
+
+| Topic | Decision | Decided by |
+|---|---|---|
+| Source of truth | auditd exec records scoped by the audit session id (`ses=`), read from `/proc/self/sessionid` at `session-open` | brief |
+| Interactive sessions | Keep the shell hook for them | brief |
+| Rules | Static rules: `execve`/`execveat`, b64 + b32, `auid!=unset`, `success=1`, key `mina`. In `/etc/audit/rules.d/50-mina.rules` | my call |
+| Who installs the rules | Only `mina install-audit` (opt-in); `install-pam` prints a hint. `uninstall-pam` and new `uninstall-audit` remove them | my call |
+| Reading | Parse the raw audit log in Rust. No `ausearch` at runtime | my call (brief: no runtime deps) |
+| Which source | Shell hook when it attached, auditd otherwise. New `command_source` field | my call |
+| Window | Execs after the log position taken at session-open, up to mina's own close exec (the flush barrier), minus processes started by the PAM stack itself (motd helpers, mina) | my call |
+| File capture | From auditd commands only for the write-verb list in AGENTS.md. Files written by sftp-server are out of scope | my call |
+| Fallback | No auditd, no rules or no session id: behave as today, and say why in `session.json` | brief (reasons: my call) |
+| Packaging | `Suggests: auditd`, not `Recommends` (see the note at the end) | my call |
+| `pam_tty_audit` | Dropped from `install-audit`: it records keystrokes | my call |
+
+## Open questions (for the maintainer)
+
+1. **File capture from auditd commands (§5).** The verb filter alone
+   still captures what scripts do with those verbs: `apt install` over
+   `ssh host cmd` runs maintainer scripts that call `cp`, `chmod`, `sed`
+   on absolute paths, and a script's `chmod 600 /etc/ssl/private/x.key`
+   would ship the key. Options: (a) accept and document; (b) only
+   commands of the session's own shell (the exec `sshd` started and its
+   direct children, from `pid`/`ppid`), not deeper; (c) no file capture
+   for auditd sessions in this step.
+2. **Which verb list.** AGENTS.md names 13 verbs; `WRITE_VERBS` in
+   `src/file_capture.rs` has 25, including `python3` and `perl` (every
+   Ansible task runs `python3 …/AnsiballZ_*.py`). The filter could use
+   the AGENTS.md list, the code's list, or a new narrower one.
+
+## Left to the builder
+
+- Module and function names, the internal shape of the parser, and how
+  the parser is split into files under `src/` (keeping the boundaries
+  above).
+- The exact quoting rules for rendering argv, as long as the result is
+  valid POSIX shell and plain arguments stay unquoted.
+- Wording of `install-audit`/`uninstall-audit` output and of the docs.
+- The poll interval of the barrier wait (50 ms is a suggestion).
+- Order of the commits.
 
 ## 1. Session scoping
 
@@ -55,7 +143,7 @@ Checked on Debian 13 (trixie) with `openssh-server`, `login`, `cron`,
 
 | Stack | pam_loginuid | mina's pam_exec |
 |---|---|---|
-| `/etc/pam.d/sshd` | 2nd session line, after `pam_selinux close` | `install-pam` appends its block at the end of the file, so after it |
+| `/etc/pam.d/sshd` | 2nd session line, after `pam_selinux close` | the Debian package (`pam-auth-update`) puts it in `common-session`, included after `pam_loginuid`; `install-pam` appends to the end of the file. After it either way |
 | `/etc/pam.d/login` | 2nd session line | after it, whether mina sits at the end of the file or in `common-session` |
 | `/etc/pam.d/cron` | yes | (not a mina service) |
 | `/etc/pam.d/su`, `/etc/pam.d/sudo` | **no** | (not a mina service) |
@@ -100,14 +188,26 @@ so they never mix into an SSH session.
 
 Other session modules after `pam_loginuid` run under the same `ses` too.
 On Debian, `pam_motd` runs `run-parts /etc/update-motd.d` (→ `uname`) on
-every SSH session, including non-interactive ones. To keep that out of
-the bundle, mina only takes execs between two markers (§3, "Window"): its
-own `session-open` exec and its own `session-close` exec. Modules that run
-before mina in the stack fall outside. This works because `install-pam`
-puts mina last in `/etc/pam.d/sshd`. If packaging moves the lines into
-`common-session`, which sshd includes *before* `pam_motd`, the motd
-helpers show up in `commands.log`. Harmless, but noisy, so keep mina last
-in the sshd stack.
+every SSH session, including non-interactive ones. The Debian package
+installs mina's lines with `pam-auth-update` into `common-session`, which
+`/etc/pam.d/sshd` includes *before* `pam_motd`, so these execs happen
+after `mina session-open`; a window based on position alone would keep
+them.
+
+They have one thing in common: the PAM stack runs in the sshd process
+whose pid is the session key, so every helper a module starts is a direct
+child of it (`ppid` = session key), and so are mina's own `session-open`
+and `session-close`. The user's shell is not: sshd forks a separate
+process for the user, and the shell is a child of that one. So for
+`PAM_SERVICE=sshd`, mina drops every exec whose process is a child of the
+session key, and every exec descended from one of those (tracked through
+`pid`/`ppid` of the SYSCALL records, §3 "Window").
+
+For `login`, the shell *is* a child of the `login` process (the session
+key), so this filter would drop it. It is not applied there: a console
+login always starts a login shell, the hook attaches, and auditd is not
+consulted (§4). For services other than sshd, only mina's own execs are
+dropped.
 
 ## 2. Rules
 
@@ -122,9 +222,15 @@ in the sshd stack.
 -a always,exit -F arch=b32 -S execve,execveat -F auid!=unset -F success=1 -k mina
 ```
 
-- **b64 and b32.** Without the b32 rule, a 32-bit program on a 64-bit
-  kernel escapes. Cheap to add. (On a kernel without 64-bit syscalls the
-  b64 line fails to load; Debian 13 has no 32-bit x86 kernel.)
+- **b64 and b32, per architecture.** Without the b32 rule, a 32-bit
+  program on a 64-bit kernel escapes. But a line the kernel rejects is
+  worse than a missing one: `augenrules --load` feeds all rules files to
+  `auditctl -R`, which stops at the first error, so rules in files sorting
+  after mina's (an admin's `99-finalize.rules` with `-e 2`, say) would not
+  load. So `install-audit` writes the file for the running kernel (the
+  machine field of `uname`), not a fixed one: b64 + b32 on `x86_64` and
+  `aarch64`, b64 only on other 64-bit kernels, b32 only on 32-bit kernels
+  (armhf, armel). The two lines above are the amd64 file.
 - **`auid!=unset`, not `auid>=1000`.** `auid>=1000` would drop root
   logins, and on shared-password fleets people often log in as root.
   `auid!=unset` covers every PAM login (SSH, console, cron) and leaves out
@@ -186,12 +292,16 @@ so it is opt-in, like the PAM lines:
 
 - **`mina install-audit`** (the existing, stubbed subcommand): writes
   `/etc/audit/rules.d/50-mina.rules`, then runs `augenrules --load` to
-  activate it. If `/etc/audit/rules.d` does not exist (auditd not
-  installed), it says so and exits non-zero. If `augenrules` fails or is
-  missing, it prints what to run.
-- **`mina install-pam`** also calls it when `/etc/audit/rules.d` exists,
-  so on a host with auditd one command sets everything up. Otherwise it
-  prints a hint (`apt install auditd && mina install-audit`).
+  activate it, then checks with `auditctl -l` that the `mina` rules are
+  loaded. If loading failed, it removes the file again, reloads, and
+  reports the error: the admin's other rules must end up as they were.
+  If `/etc/audit/rules.d` does not exist (auditd not installed), it says
+  so and exits non-zero. If `augenrules` is missing, it prints what to
+  run.
+- **`mina install-pam`** does not install the rules: they affect every
+  login on the host, not only mina's sessions, so they get their own
+  explicit step. It prints a hint (`mina install-audit`, after
+  `apt install auditd` if needed).
 - **`mina uninstall-audit`** (new): removes the file and runs
   `augenrules --load`. Idempotent.
 - **`mina uninstall-pam`** also calls it.
@@ -298,17 +408,22 @@ What the parser handles:
 
 ### Window
 
-Of the session's events, mina keeps those strictly between two markers:
+Of the events with the session's `ses`, mina keeps those
 
-- the **open marker**: the exec of `mina session-open` itself (pid
-  recorded in `<key>.audit`, `exe` = mina's path);
-- the **close marker**: the exec of the running `mina session-close`
-  (its own pid).
+- after the log position recorded at session-open, and not older than
+  `started_at` (which guards against an equal `ses` from an earlier boot
+  in a rotated file);
+- before the **close marker**: the exec of the running
+  `mina session-close` (its own pid);
+- not started by the PAM stack (sshd only): an exec whose `ppid` is the
+  session key is a PAM helper; its `pid` joins an exclusion set, and so
+  does every later exec whose `ppid` is in the set (§1). This drops
+  `run-parts`/`uname` from `pam_motd` and mina itself. A helper that forks
+  a subshell which never execs breaks the chain, and its children's execs
+  leak in. Accepted: noise in `commands.log`, nothing more;
+- not of the mina binary itself (all services).
 
-Ordering is by `(sec, ms, serial)`. If the open marker is not in the log
-(the offset was taken after auditd wrote it, which is the normal case), the
-window starts at the offset. Execs of the mina binary itself are always
-dropped.
+Ordering is by `(sec, ms, serial)`.
 
 The close marker doubles as a **flush barrier**. auditd writes
 asynchronously; at close, the session's last execs may not be in the
@@ -328,8 +443,8 @@ mina's audit setup never pay it.
 ### API shape
 
 `CommandSource::commands_for_session(session_pid)` stays as it is.
-`AuditdSource` holds what it needs (session id, log position, open pid,
-`started_at`, limits) and returns, from an inherent method,
+`AuditdSource` holds what it needs (session id, session key, PAM
+service, log position, `started_at`, limits) and returns, from an inherent method,
 `AuditCommands { entries, status, truncated }`; the trait impl returns
 only the entries. The parser is a pure function `&[u8]` → events, for
 Tier 1 tests.
@@ -457,8 +572,9 @@ why. Nothing in this path can fail the PAM call: errors are caught in
   without EXECVE ignored.
 - argv: hex with spaces, `a1_len` + `a1[0]`, `a1[1]`; argv over several
   EXECVE records; missing chunk → `[argv incomplete]`.
-- Filter: other `ses` dropped, mina's own execs dropped, window between
-  markers, missing open marker (offset only).
+- Filter: other `ses` dropped, mina's own execs dropped, PAM-helper
+  subtree dropped for sshd but not for login, close marker ends the
+  window, events older than `started_at` dropped.
 - Rendering: quoting of arguments with spaces, quotes, `$`, non-UTF-8.
 - `choose_source` for every combination.
 - Status table of the barrier (given events, marker found or not).
@@ -470,7 +586,7 @@ why. Nothing in this path can fail the PAM call: errors are caught in
 
 - Fixtures in `tests/fixtures/audit/`: `ssh-cmd.log` (`ssh host cmd`),
   `sftp.log`, `scp-legacy.log`, `sudo-i.log` (uid changes, `ses` stays),
-  `motd.log` (execs before the open marker), `noise.log` (two sessions and
+  `motd.log` (pam_motd helpers after session-open), `noise.log` (two sessions and
   a cron job interleaved), `enriched.log` and `raw.log`. Written from the
   documented format first; replaced by recordings from a test VM during
   the Tier-3 run, with host names, users and addresses replaced by
@@ -522,11 +638,13 @@ Nothing needs auditd, root or a real kernel; CI stays as it is.
    auditd.conf reader.
 4. `file_capture`: verb-filtered extraction.
 5. `bundle`: `command_source`, `audit_status`, `commands_truncated`.
-6. `main`: `install-audit`, `uninstall-audit`, hooks in
-   `install-pam`/`uninstall-pam`; source selection in the close pipeline;
-   remove `<key>.audit` at close.
-7. `mina.rules`; docs (README, manual-testing, troubleshooting, STATUS.md
-   #16/Step 11, CHANGES.md).
+6. `main`: `install-audit` (per-arch file, load check, rollback),
+   `uninstall-audit`, the hint in `install-pam`, removal in
+   `uninstall-pam`; source selection in the close pipeline; remove
+   `<key>.audit` at close.
+7. Rules template; docs (README, manual-testing, troubleshooting,
+   STATUS.md #16/Step 11, whose "`ausearch` integration" this design
+   replaces, CHANGES.md).
 
 ## Packaging note (Debian)
 
@@ -541,11 +659,15 @@ Nothing needs auditd, root or a real kernel; CI stays as it is.
   auditd records no execs for mina anyway, so pulling it in does nothing
   until `install-audit` runs. The README and the `install-pam` hint say
   what to install.
-- If you prefer `Recommends`, the design does not change: `install-pam`
-  then finds `/etc/audit/rules.d` and installs the rules in the same step.
-- `postrm purge`: nothing to do for the rules file, since `uninstall-pam`
-  removes it; a `prerm` that calls `mina uninstall-audit` would make
-  `apt remove` clean even when the admin forgot. Worth deciding together
-  with how the PAM lines are handled at removal today.
+- If you prefer `Recommends`, the design does not change: the rules
+  still need `mina install-audit`.
+- The package enables the PAM lines itself (`pam-auth-update --package`
+  in postinst, `Default: yes`) and does not run `install-pam`. The audit
+  rules stay a separate admin step; postinst does not install them, so an
+  upgrade never turns on exec auditing by itself.
+- `prerm` (`remove`/`deconfigure`) already calls
+  `pam-auth-update --package --remove`; it should also call
+  `mina uninstall-audit` (ignoring "not installed"), so `apt remove`
+  leaves no rules behind.
 - NEWS.Debian entry: commands of non-interactive SSH sessions need
   auditd + `mina install-audit`.
