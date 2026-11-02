@@ -38,6 +38,10 @@ clap     = { version = "4", features = ["derive"] }
 # CA (no webpki-roots: Debian trixie does not package it). Keep within what
 # trixie ships (ureq 3.0.11): Debian builds link against system crates.
 ureq     = { version = "3.0", default-features = false, features = ["rustls", "platform-verifier"] }
+# Bundle tarball and its digest (HTTPS transport).
+tar      = "0.4"
+flate2   = "1"
+sha2     = "0.10"
 
 # umask(2) and geteuid(2) for session-close; std has neither. Already in the
 # lock file (pulled in by tempfile), so no new crate to vet.
