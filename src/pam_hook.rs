@@ -21,6 +21,22 @@ pub trait PamSession {
     fn opened_at(&self) -> SystemTime;
 }
 
+// ── Which PAM services open a session ─────────────────────────────────────
+
+/// Whether a PAM service (`PAM_SERVICE`, as passed by pam_exec) opens a
+/// mina session. Only services on the allowlist do; a missing or empty
+/// service never does.
+///
+/// The pam_exec lines may sit in a stack shared by every service (Debian's
+/// `common-session`), so cron, su, sudo, runuser and `systemd --user` call
+/// mina too. They must neither open a session nor close one.
+pub fn service_opens_session(service: Option<&str>, allowed: &[String]) -> bool {
+    match service {
+        Some(s) if !s.is_empty() => allowed.iter().any(|a| a == s),
+        _ => false,
+    }
+}
+
 // ── Session metadata ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +205,57 @@ mod tests {
             hostname: "web-prod-03",
             opened_at: SystemTime::now() - Duration::from_secs(300),
         }
+    }
+
+    fn default_services() -> Vec<String> {
+        vec!["sshd".to_owned(), "login".to_owned()]
+    }
+
+    #[test]
+    fn login_services_open_a_session() {
+        assert!(service_opens_session(Some("sshd"), &default_services()));
+        assert!(service_opens_session(Some("login"), &default_services()));
+    }
+
+    #[test]
+    fn other_services_do_not_open_a_session() {
+        for s in [
+            "cron",
+            "su",
+            "su-l",
+            "sudo",
+            "sudo-i",
+            "runuser",
+            "systemd-user",
+        ] {
+            assert!(!service_opens_session(Some(s), &default_services()), "{s}");
+        }
+    }
+
+    #[test]
+    fn missing_or_empty_service_does_not_open_a_session() {
+        assert!(!service_opens_session(None, &default_services()));
+        assert!(!service_opens_session(Some(""), &default_services()));
+        assert!(!service_opens_session(Some(""), &["".to_owned()]));
+    }
+
+    #[test]
+    fn service_match_is_exact() {
+        assert!(!service_opens_session(Some("SSHD"), &default_services()));
+        assert!(!service_opens_session(Some("sshd "), &default_services()));
+        assert!(!service_opens_session(Some("ssh"), &default_services()));
+    }
+
+    #[test]
+    fn empty_allowlist_opens_nothing() {
+        assert!(!service_opens_session(Some("sshd"), &[]));
+    }
+
+    #[test]
+    fn configured_service_opens_a_session() {
+        let allowed = vec!["sshd".to_owned(), "su-l".to_owned()];
+        assert!(service_opens_session(Some("su-l"), &allowed));
+        assert!(!service_opens_session(Some("login"), &allowed));
     }
 
     #[test]
