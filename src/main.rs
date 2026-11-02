@@ -470,6 +470,7 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
     let commands = source
         .commands_for_session(key)
         .context("failed to read command log")?;
+    let shell_hook = source.hook_attached(key);
 
     // 3. Extract candidate file paths, resolve relative ones against the
     //    directory the command ran in (dropped when unknown), deduplicated,
@@ -516,8 +517,14 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
         .collect();
 
     // 5. Assemble on-disk bundle
-    let bundle = Bundle::write(&config.staging_dir, state.meta.clone(), commands, captures)
-        .context("failed to assemble bundle")?;
+    let bundle = Bundle::write(
+        &config.staging_dir,
+        state.meta.clone(),
+        shell_hook,
+        commands,
+        captures,
+    )
+    .context("failed to assemble bundle")?;
 
     // 6. Build the configured transport and ship (retry once on failure)
     let transport = build_transport(&config)?;

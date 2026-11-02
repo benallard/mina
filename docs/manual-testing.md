@@ -94,7 +94,8 @@ ls -la /var/mina/<hostname>/
 # (with a _2, _3, … suffix if a session of the same user started in the same second)
 
 cat /var/mina/<hostname>/*/session.json
-# Expect: correct user, source_ip, started_at, ended_at, files_captured >= 1
+# Expect: correct user, source_ip, started_at, ended_at, files_captured >= 1,
+# "tty": "ssh", "shell_hook": true
 
 cat /var/mina/<hostname>/*/commands.log
 # Expect: all four commands, one per line as <UTC timestamp>\t<command>,
@@ -103,6 +104,27 @@ cat /var/mina/<hostname>/*/commands.log
 cat "/var/mina/<hostname>/*/files/etc/hostname"
 # Expect: content of /etc/hostname as it was at session close
 ```
+
+### Sessions without a shell
+
+Run a command over SSH without a login shell, then copy a file with scp:
+
+```bash
+ssh <user>@<test-host> 'cat /etc/hostname'
+scp ./somefile <user>@<test-host>:/tmp/
+```
+
+```bash
+cat /var/mina/<hostname>/<newest>/session.json
+# Expect, for each of the two bundles: "tty": "ssh", "shell_hook": false,
+# "commands_recorded": 0
+cat /var/mina/<hostname>/<newest>/commands.log
+# Expect: empty. Commands of sessions without a shell are not recorded
+# until the auditd command source exists.
+```
+
+An interactive SSH login where you log out right away gives
+`"shell_hook": true` and `"commands_recorded": 0`.
 
 ---
 
@@ -126,7 +148,8 @@ log out.
 ls /var/mina/<hostname>/
 # Expect: one new bundle for the console user
 cat /var/mina/<hostname>/<newest>/session.json
-# Expect: source_ip null, user = console user
+# Expect: source_ip null, user = console user, "tty": "tty1" (or
+# "/dev/tty1"), "shell_hook": true
 cat /var/mina/<hostname>/<newest>/commands.log
 # Expect: cat /etc/hostname
 ```

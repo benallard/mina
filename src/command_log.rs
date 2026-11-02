@@ -66,6 +66,19 @@ pub struct ShellHookSource {
     pub log_dir: std::path::PathBuf,
 }
 
+impl ShellHookSource {
+    /// Whether the shell hook attached to the session: a login shell
+    /// sourced it and created `<session_key>.cmds`. The hook creates the
+    /// file before the first command, so it exists even when nothing was
+    /// logged.
+    ///
+    /// `false` means no shell ever loaded the hook, as for `ssh host cmd`,
+    /// scp and sftp: the session had no command stream to record.
+    pub fn hook_attached(&self, session_key: u32) -> bool {
+        self.log_dir.join(format!("{}.cmds", session_key)).is_file()
+    }
+}
+
 impl CommandSource for ShellHookSource {
     fn commands_for_session(&self, session_pid: u32) -> Result<Vec<CommandEntry>> {
         let path = self.log_dir.join(format!("{}.cmds", session_pid));
@@ -186,6 +199,19 @@ mod tests {
         };
         let entries = source.commands_for_session(99999).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn hook_attached_follows_the_log_file() {
+        let dir = TempDir::new().unwrap();
+        let source = ShellHookSource {
+            log_dir: dir.path().to_owned(),
+        };
+        assert!(!source.hook_attached(1234));
+        // An empty log: the hook attached but no command ran.
+        std::fs::File::create(dir.path().join("1234.cmds")).unwrap();
+        assert!(source.hook_attached(1234));
+        assert!(!source.hook_attached(5678));
     }
 
     #[test]

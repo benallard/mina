@@ -17,6 +17,8 @@ use std::time::SystemTime;
 pub trait PamSession {
     fn user(&self) -> &str;
     fn source_ip(&self) -> Option<&str>;
+    /// `PAM_TTY` as given to pam_exec, if set and not empty.
+    fn tty(&self) -> Option<&str>;
     fn hostname(&self) -> &str;
     fn opened_at(&self) -> SystemTime;
 }
@@ -44,6 +46,13 @@ pub struct SessionMeta {
     pub host: String,
     pub user: String,
     pub source_ip: Option<String>,
+    /// `PAM_TTY` at session open, as reported: `ttyN` or `/dev/ttyN` for a
+    /// console login. It does not say whether the session is interactive:
+    /// on Linux, sshd sets it to `ssh` for every session (OpenSSH's
+    /// `PAM_TTY_KLUDGE`) and opens the PAM session before any pty exists.
+    /// Missing in state files written by mina <= 0.2.
+    #[serde(default)]
+    pub tty: Option<String>,
     pub started_at: DateTime<Utc>,
 
     /// Filled in at session close.
@@ -56,6 +65,7 @@ impl SessionMeta {
             host: session.hostname().to_owned(),
             user: session.user().to_owned(),
             source_ip: session.source_ip().map(str::to_owned),
+            tty: session.tty().map(str::to_owned),
             started_at: session.opened_at().into(),
             ended_at: None,
         }
@@ -78,6 +88,7 @@ impl SessionMeta {
 pub struct EnvPamSession {
     user: String,
     source_ip: Option<String>,
+    tty: Option<String>,
     hostname: String,
     opened_at: SystemTime,
 }
@@ -87,6 +98,7 @@ impl EnvPamSession {
         Ok(Self {
             user: std::env::var("PAM_USER").unwrap_or_else(|_| "unknown".into()),
             source_ip: std::env::var("PAM_RHOST").ok(),
+            tty: non_empty(std::env::var("PAM_TTY").ok()),
             hostname: hostname()?,
             opened_at: SystemTime::now(),
         })
@@ -100,12 +112,20 @@ impl PamSession for EnvPamSession {
     fn source_ip(&self) -> Option<&str> {
         self.source_ip.as_deref()
     }
+    fn tty(&self) -> Option<&str> {
+        self.tty.as_deref()
+    }
     fn hostname(&self) -> &str {
         &self.hostname
     }
     fn opened_at(&self) -> SystemTime {
         self.opened_at
     }
+}
+
+/// A PAM item given to pam_exec, or `None` when it is unset or empty.
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|v| !v.is_empty())
 }
 
 fn hostname() -> Result<String> {
@@ -179,6 +199,7 @@ mod tests {
     struct FakePamSession {
         user: &'static str,
         source_ip: Option<&'static str>,
+        tty: Option<&'static str>,
         hostname: &'static str,
         opened_at: SystemTime,
     }
@@ -189,6 +210,9 @@ mod tests {
         }
         fn source_ip(&self) -> Option<&str> {
             self.source_ip
+        }
+        fn tty(&self) -> Option<&str> {
+            self.tty
         }
         fn hostname(&self) -> &str {
             self.hostname
@@ -202,6 +226,7 @@ mod tests {
         FakePamSession {
             user: "alice",
             source_ip: Some("10.0.1.42"),
+            tty: Some("ssh"),
             hostname: "web-prod-03",
             opened_at: SystemTime::now() - Duration::from_secs(300),
         }
@@ -265,7 +290,21 @@ mod tests {
         assert_eq!(meta.user, "alice");
         assert_eq!(meta.source_ip.as_deref(), Some("10.0.1.42"));
         assert_eq!(meta.host, "web-prod-03");
+        assert_eq!(meta.tty.as_deref(), Some("ssh"));
         assert!(meta.ended_at.is_none());
+    }
+
+    #[test]
+    fn pam_tty_is_kept_as_given() {
+        for tty in ["ssh", "/dev/pts/0", "pts/0", "tty1", "/dev/tty1"] {
+            assert_eq!(non_empty(Some(tty.to_owned())).as_deref(), Some(tty));
+        }
+    }
+
+    #[test]
+    fn empty_or_unset_pam_tty_is_none() {
+        assert_eq!(non_empty(Some(String::new())), None);
+        assert_eq!(non_empty(None), None);
     }
 
     #[test]
@@ -283,6 +322,7 @@ mod tests {
         let s = FakePamSession {
             user: "bob",
             source_ip: None,
+            tty: None,
             hostname: "db-01",
             opened_at: SystemTime::now(),
         };
@@ -306,7 +346,22 @@ mod tests {
         assert_eq!(loaded.session_key, 12345);
         assert_eq!(loaded.meta.user, "alice");
         assert_eq!(loaded.meta.source_ip.as_deref(), Some("10.0.1.42"));
+        assert_eq!(loaded.meta.tty.as_deref(), Some("ssh"));
         assert!(loaded.meta.ended_at.is_none());
+    }
+
+    #[test]
+    fn state_file_without_tty_still_loads() {
+        // Written by mina <= 0.2, before `tty` existed.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            SessionState::path(dir.path(), 777),
+            r#"{"session_key":777,"meta":{"host":"db-01","user":"bob","source_ip":null,"started_at":"2026-10-30T14:03:46Z","ended_at":null}}"#,
+        )
+        .unwrap();
+        let loaded = SessionState::load(dir.path(), 777).unwrap();
+        assert_eq!(loaded.meta.user, "bob");
+        assert!(loaded.meta.tty.is_none());
     }
 
     #[test]
