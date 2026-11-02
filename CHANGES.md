@@ -29,6 +29,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Commands of sessions without a login shell, from auditd** (#1) —
+  `ssh host cmd`, scp and sftp start no login shell, so the shell hook
+  never saw their commands; on one test machine 88 of 89 SSH bundles were
+  empty. With auditd and `mina install-audit`, the kernel records every
+  program a logged-in user runs, and `session-close` reads those of its
+  session from auditd's log, scoped by the audit session id
+  `pam_loginuid` gives the login. Interactive sessions keep the shell
+  hook. New in `session.json`: `audit_session`, `command_source`
+  (`shell-hook`, `auditd`, `none`), `audit_status` (why nothing was
+  recorded) and `commands_truncated`. Files are captured from these
+  commands only for the session's own commands, not what package scripts
+  run, and only for editors and a few writing programs. New:
+  `mina uninstall-audit`, `[audit]` in `mina.toml`. `install-audit` no
+  longer plans to enable `pam_tty_audit`, which records keystrokes.
+  Without auditd, nothing changes.
 - **`tty` and `shell_hook` in `session.json`** (#1, first step) —
   `ssh host cmd`, scp and sftp start no login shell, so the shell hook
   never loads and their bundles have an empty `commands.log`. Such a
@@ -37,9 +52,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `PAM_TTY` at session open (`null` when unset or empty). It names the
   terminal for a console login (`tty1`), but sshd on Linux always reports
   `ssh` (OpenSSH sets it before any pty exists), so it does not tell
-  interactive SSH sessions apart. Commands of sessions without a shell
-  are not recorded until the auditd command source exists. State files
-  and bundles from mina <= 0.2 lack both fields and still load.
+  interactive SSH sessions apart. State files and bundles from
+  mina <= 0.2 lack both fields and still load.
+
 
 ### Fixed
 

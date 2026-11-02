@@ -1,6 +1,6 @@
 # Design: auditd command source (#1, step 2)
 
-Status: **proposal, for review**. Nothing here is implemented yet.
+Status: **approved and implemented** (2026-11-02). Tier 3 not yet run.
 
 ## Problem
 
@@ -508,23 +508,30 @@ candidates.
 option b). Depth is counted in processes, from the `pid`/`ppid` of the
 SYSCALL records of the window (after the PAM-helper filter, §3):
 
-- A **root** is an exec whose parent did not exec anything in the window.
-  That is the process sshd started for the session, i.e. the user's
-  shell (`bash -c 'cmd'`, `sh -c sftp-server`).
-- **Depth 0**: execs with a root's pid. A shell that runs a single command
-  execs it in place, so `ssh host 'sed -i … /etc/x'` gives `sed` at
-  depth 0, under the shell's pid.
-- **Depth 1**: execs whose `ppid` is a depth-0 pid: what the shell forks,
-  e.g. `cp` and `systemctl` in `ssh host 'cp a /etc/x && systemctl reload x'`,
-  or the program `sudo` runs in `ssh host 'sudo sed -i … /etc/x'`.
-- **Deeper: no candidates.** That drops what package maintainer scripts
+- The **shell's parent** is the parent of the window's first exec: the
+  process sshd forked for the session, which started the user's shell
+  (`bash -c 'cmd'`, `sh -c sftp-server`). Every shell of the connection
+  (multiplexed channels too) is its child.
+- **Depth 0**: execs whose `ppid` is the shell's parent. A shell that runs
+  a single command execs it in place (same pid, same parent), so
+  `ssh host 'sed -i … /etc/x'` gives `sed` at depth 0.
+- **Depth n+1**: execs whose `ppid` is a pid that exec'd at depth n:
+  `cp` and `systemctl` in `ssh host 'cp a /etc/x && systemctl reload x'`
+  are at depth 1.
+- **Depth > 1: no candidates.** That drops what package maintainer scripts
   run under `apt`/`dpkg`, and what a script started by the user's command
   runs inside it.
+- **Untraceable: no candidates.** An exec whose parent never exec'd in
+  the window (a forked subshell, a helper process) cannot be placed, and
+  yields none. *Found during implementation:* `sudo` with `use_pty`,
+  Debian's default, runs the command from a monitor process that never
+  execs, so commands under `sudo` are untraceable. `ssh host 'sudo sed -i … /etc/x'`
+  therefore captures nothing. A false negative, accepted per AGENTS.md;
+  the commands are still in `commands.log`.
 
 The count is by process, not by intent. A script the user runs directly
 (`ssh host ./deploy.sh`) execs in place at depth 0, so the programs it
-starts are at depth 1 and do yield candidates. `sudo bash -c 'cp a /etc/x'`
-puts `cp` at depth 2, so it yields none: a false negative, accepted.
+starts are at depth 1 and do yield candidates.
 
 **2. Its program is in the write-verb list of AGENTS.md** (my call):
 `vim vi nano emacs cp mv cat tee sed awk install chmod chown`, matched on
@@ -599,31 +606,33 @@ why. Nothing in this path can fail the PAM call: errors are caught in
 - Rendering: quoting of arguments with spaces, quotes, `$`, non-UTF-8.
 - `choose_source` for every combination.
 - Status table of the barrier (given events, marker found or not).
-- Depth: roots, in-place exec at depth 0, forked child at depth 1,
-  grandchild not a candidate; `sudo cmd` at depth 1; shell-hook entries
-  always candidates.
+- Depth: in-place exec at depth 0, forked child at depth 1, grandchild
+  not a candidate, untraceable parent not a candidate.
 - `file_capture`: the verb filter.
 - `config`: `[audit]` defaults and overrides; `auditd.conf` parsing
   (`log_file`, `write_logs`).
 
 ### Tier 2 (`tests/auditd_source.rs`, files in a temp dir)
 
-- Fixtures in `tests/fixtures/audit/`: `ssh-cmd.log` (`ssh host cmd`),
-  `sftp.log`, `scp-legacy.log`, `sudo-i.log` (uid changes, `ses` stays),
-  `apt-install.log` (maintainer scripts' `cp`/`chmod` deep in the tree:
-  in `commands.log`, no candidates),
-  `motd.log` (pam_motd helpers after session-open), `noise.log` (two sessions and
-  a cron job interleaved), `enriched.log` and `raw.log`. Written from the
-  documented format first; replaced by recordings from a test VM during
-  the Tier-3 run, with host names, users and addresses replaced by
-  `example` values before they are committed.
+- Fixtures in `tests/fixtures/audit/` (ENRICHED format): `ssh-cmd.log`
+  (`ssh host cmd`, with a cron job of another session interleaved),
+  `sftp.log` (with pam_motd helpers after session-open), `sudo-apt.log`
+  (sudo, apt, dpkg and a maintainer script's `cp`: in `commands.log`, no
+  candidates). RAW format, hex values, split argv and interleaving are
+  covered by the Tier 1 tests. Written from the documented format first;
+  to be replaced by recordings from a test VM during the Tier-3 run, with
+  host names, users and addresses replaced by `example` values before
+  they are committed.
 - Rotation: position in `audit.log`, rotation simulated by renaming in the
   temp dir, read across `audit.log.1` + `audit.log`; inode gone →
   `incomplete`.
 - Barrier: close marker appended by a second thread after 100 ms → `ok`;
   never appended → `incomplete` / `not-capturing` within `wait_ms`.
-- Lifecycle with `FakeCommandSource` (exported, fixes Q3): hook absent +
-  audit ok → bundle with auditd commands and `command_source: "auditd"`.
+- *Not done:* a lifecycle test (hook absent + audit ok → bundle with
+  `command_source: "auditd"`). The close pipeline lives in the binary
+  (`main.rs`), so `tests/` cannot call it; that needs it moved into the
+  library first (STATUS.md #17, Q3).
+
 
 Nothing needs auditd, root or a real kernel; CI stays as it is.
 
