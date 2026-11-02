@@ -1,6 +1,14 @@
 # /etc/mina.toml — Mina agent configuration
 # Copy this file to /etc/mina.toml and adjust before running `mina install-pam`.
 
+# Where bundles are assembled before they are shipped (top-level key: keep it
+# above the first [table]). A bundle is removed from here once it has been
+# shipped, and kept if shipping failed: it is then the only copy.
+# Created with mode 0700 if missing. session-close refuses to write into a
+# staging directory that is a symlink, not owned by root, or writable by
+# group or other. Do not point it into /tmp or any other shared directory.
+# staging_dir = "/var/lib/mina/staging"
+
 [nest]
 # Transport backend: "ssh" (default), "https", or "local".
 #
@@ -11,7 +19,8 @@
 #         blocked or the nest is behind a corporate firewall.
 #         The endpoint MUST be HTTPS; plain HTTP is rejected.
 #
-# local — copies bundles into a local directory and marks them read-only.
+# local — copies bundles into a local directory, readable by root only
+#         (files 0400, directories 0500).
 #         No network required. Useful when the nest is on the same machine,
 #         or when testing without a remote endpoint.
 #
@@ -25,7 +34,8 @@ ssh_destination = "mina@nest.example.com:/var/mina"
 # https_endpoint = "https://nest.example.com/ingest"
 
 # Local destination (required when transport = "local").
-# The directory is created automatically if it does not exist.
+# The directory is created automatically if it does not exist. Keep it
+# closed to other users, e.g. `install -d -m 0750 -o root -g adm /var/mina`.
 # local_destination = "/var/mina"
 
 

@@ -105,6 +105,16 @@ cat "/var/mina/<hostname>/*/files/etc/hostname"
 # Expect: content of /etc/hostname as it was at session close
 ```
 
+On the test machine, verify the staged copy is gone:
+
+```bash
+sudo stat -c '%a %U %n' /var/lib/mina/staging
+# Expect: 700 root /var/lib/mina/staging
+sudo find /var/lib/mina/staging -mindepth 2
+# Expect: no output: a bundle is removed from staging once it has shipped
+# (empty <hostname> directories may remain)
+```
+
 ### Sessions without a shell
 
 Run a command over SSH without a login shell, then copy a file with scp:
@@ -272,7 +282,9 @@ Start a session, run a few commands, log out.
 
 Verify in syslog (`journalctl -u mina` or `/var/log/syslog`):
 - Transport failure is logged
-- Session bundle is preserved locally under `/tmp/mina-staging/`
+- Session bundle is preserved locally under
+  `/var/lib/mina/staging/<hostname>/` (it is the only copy; mina does not
+  remove it when shipping failed)
 
 Restore connectivity:
 ```bash
@@ -296,11 +308,10 @@ local_destination = "/var/mina"
 ```
 
 Create the destination (Mina creates it automatically on first ship, but
-pre-creating it lets you set ownership explicitly):
+pre-creating it lets you set ownership explicitly). Bundles hold copies of
+files only root may read, so keep the nest closed to other users:
 ```bash
-sudo mkdir -p /var/mina
-sudo chown root:root /var/mina
-sudo chmod 755 /var/mina
+sudo install -d -m 0750 -o root -g adm /var/mina
 ```
 
 Repeat test 3 (login, edit a file, logout).
@@ -314,21 +325,41 @@ cat /var/mina/<hostname>/*/session.json
 cat /var/mina/<hostname>/*/commands.log
 ```
 
-Verify all captured files are read-only:
+Verify the bundle is read-only and private to root:
 ```bash
-ls -la /var/mina/<hostname>/*/files/etc/hostname
-# Expect: -r--r--r-- (444)
+sudo find /var/mina/<hostname>/ -mindepth 1 -printf '%m %u %p\n'
+# Expect: 500 root for every directory, 400 root for every file
 
-# Attempting to write should fail:
-echo "test" >> /var/mina/<hostname>/*/files/etc/hostname
+# As a regular user (not in group adm), nothing is readable:
+ls /var/mina/
 # Expect: Permission denied
 ```
 
 Verify no staging artefacts remain:
 ```bash
-ls /var/mina/<hostname>/
+sudo ls -a /var/mina/<hostname>/
 # Expect: only the final bundle directory; no .tmp_ prefixes
+sudo find /var/lib/mina/staging -mindepth 2
+# Expect: no output
 ```
+
+Verify an unsafe staging directory is refused. Point `staging_dir` at a
+directory a regular user could have prepared:
+```bash
+sudo install -d -m 1777 /srv/mina-staging-test
+echo 'staging_dir = "/srv/mina-staging-test"' | sudo sh -c \
+  'cat - /etc/mina.toml > /etc/mina.toml.new && mv /etc/mina.toml.new /etc/mina.toml'
+```
+Log in and out once more.
+- Logout is not delayed or blocked
+- syslog / `journalctl` shows `unsafe or unusable staging_dir` and
+  `writable by group or other`
+- No new bundle in `/var/mina/<hostname>/`, nothing in
+  `/srv/mina-staging-test`
+
+Repeat with `sudo ln -s /var/lib/mina/staging /srv/mina-staging-test`
+(after `sudo rmdir /srv/mina-staging-test`): expect `is a symlink`. Remove
+the `staging_dir` line and `/srv/mina-staging-test` afterwards.
 
 ---
 
