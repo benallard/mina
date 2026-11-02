@@ -203,7 +203,5 @@ mod tests {
         assert_eq!(entries[1].command, "vim nginx.conf");
         assert_eq!(entries[0].cwd, None);
         assert_eq!(entries[1].cwd, Some(PathBuf::from("/etc/nginx")));
-        assert_eq!(entries[0].cwd, None);
-        assert_eq!(entries[1].cwd, Some(PathBuf::from("/etc/nginx")));
     }
 }
