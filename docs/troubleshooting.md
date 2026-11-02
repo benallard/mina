@@ -512,6 +512,7 @@ for where that ends up). Match the message:
 | `Expired` | Nest or client certificate expired | Renew it; Mina reads the files again at the next session close |
 | `… and nest.https_client_key … do not match` | Key does not belong to the certificate (e.g. only one of the two was renewed) | Compare `openssl x509 -noout -pubkey -in CERT` with `openssl pkey -pubout -in KEY`; they must be equal |
 | `HTTP 400` (`No required SSL certificate was sent`) / `HTTP 403` | Nest wants a client certificate, or does not trust the one sent | Set `https_client_cert`/`https_client_key`; check the nest trusts the CA that issued it |
+| `HTTP 301` / `302` / `307` / `308` | Wrong `https_endpoint` (often a missing or extra trailing `/`); Mina never follows redirects | Set the URL the nest answers on directly |
 | `Timeout` / `Connection refused` | Nest unreachable on 443 | Network or firewall; the bundle is kept in staging |
 
 To retry by hand, inspect the bundle in staging and copy it to the nest;

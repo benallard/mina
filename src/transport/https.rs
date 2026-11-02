@@ -146,13 +146,7 @@ impl Transport for HttpsTransport {
         let digest = tarball::digest(&body);
         // Before any connection: a missing key fails here, not mid-handshake.
         let tls = tls_config(load_tls_material(&self.settings)?);
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(CONNECT_TIMEOUT))
-            .timeout_global(Some(GLOBAL_TIMEOUT))
-            .http_status_as_error(false)
-            .tls_config(tls)
-            .build()
-            .into();
+        let agent = ureq::Agent::new_with_config(agent_config(tls));
         let endpoint = &self.settings.endpoint;
         let mut response = agent
             .post(endpoint)
@@ -173,6 +167,23 @@ impl Transport for HttpsTransport {
         }
         check_status(status, &snippet).with_context(|| format!("POST {endpoint}"))
     }
+}
+
+/// The agent for one ship. Redirects are never followed: a followed 3xx
+/// turns the POST into a bodyless GET, and a 2xx to that would count as
+/// shipped. A 3xx comes back as a non-2xx failure instead. No proxy from the
+/// environment (`HTTPS_PROXY` …, which pam_env may set), HTTPS only, bounded
+/// timeouts, statuses handled by `check_status`.
+fn agent_config(tls: TlsConfig) -> ureq::config::Config {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_global(Some(GLOBAL_TIMEOUT))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .https_only(true)
+        .proxy(None)
+        .tls_config(tls)
+        .build()
 }
 
 /// Any 2xx is success; otherwise an error quoting the status and at most
@@ -351,6 +362,19 @@ mod tests {
             shown > 0 && shown * 2 <= MAX_ERROR_BODY,
             "{shown} chars shown"
         );
+    }
+
+    /// A followed redirect turns the POST into a GET; a 2xx to that GET
+    /// would count as shipped and the staged bundle would be deleted.
+    #[test]
+    fn agent_never_follows_redirects_or_uses_a_proxy() {
+        let f = Fixtures::new();
+        let m = load_tls_material(&f.settings("chain.pem", "client.key", None)).unwrap();
+        let config = agent_config(tls_config(m));
+        assert_eq!(config.max_redirects(), 0);
+        assert!(config.https_only());
+        assert!(config.proxy().is_none());
+        assert!(!config.http_status_as_error());
     }
 
     #[test]
