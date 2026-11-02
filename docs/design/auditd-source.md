@@ -74,7 +74,8 @@ From AGENTS.md (hard constraints), and from the task:
 ## Summary of the decisions
 
 Who decided: **brief** = set by the maintainer in the task for this
-design; **my call** = proposed here, for review.
+design; **maintainer** = the maintainer's answer during review;
+**my call** = proposed here, for review.
 
 | Topic | Decision | Decided by |
 |---|---|---|
@@ -85,25 +86,12 @@ design; **my call** = proposed here, for review.
 | Reading | Parse the raw audit log in Rust. No `ausearch` at runtime | my call (brief: no runtime deps) |
 | Which source | Shell hook when it attached, auditd otherwise. New `command_source` field | my call |
 | Window | Execs after the log position taken at session-open, up to mina's own close exec (the flush barrier), minus processes started by the PAM stack itself (motd helpers, mina) | my call |
-| File capture | From auditd commands only for the write-verb list in AGENTS.md. Files written by sftp-server are out of scope | my call |
+| File capture: depth | From auditd commands only for the session's own commands: the shell and what it starts directly (depth ≤ 1), §5 | maintainer (option b) |
+| Candidate flag | `CommandEntry` gets `capture_paths: bool`, set by `command_log` from the depth; not written to `commands.log` | my call |
+| File capture: verbs | Only the write-verb list of AGENTS.md (13 programs), not `WRITE_VERBS` from the code. Files written by sftp-server are out of scope | my call |
 | Fallback | No auditd, no rules or no session id: behave as today, and say why in `session.json` | brief (reasons: my call) |
 | Packaging | `Suggests: auditd`, not `Recommends` (see the note at the end) | my call |
 | `pam_tty_audit` | Dropped from `install-audit`: it records keystrokes | my call |
-
-## Open questions (for the maintainer)
-
-1. **File capture from auditd commands (§5).** The verb filter alone
-   still captures what scripts do with those verbs: `apt install` over
-   `ssh host cmd` runs maintainer scripts that call `cp`, `chmod`, `sed`
-   on absolute paths, and a script's `chmod 600 /etc/ssl/private/x.key`
-   would ship the key. Options: (a) accept and document; (b) only
-   commands of the session's own shell (the exec `sshd` started and its
-   direct children, from `pid`/`ppid`), not deeper; (c) no file capture
-   for auditd sessions in this step.
-2. **Which verb list.** AGENTS.md names 13 verbs; `WRITE_VERBS` in
-   `src/file_capture.rs` has 25, including `python3` and `perl` (every
-   Ansible task runs `python3 …/AnsiballZ_*.py`). The filter could use
-   the AGENTS.md list, the code's list, or a new narrower one.
 
 ## Left to the builder
 
@@ -512,19 +500,52 @@ one touched on purpose: `/var/lib/dpkg/info/*.postinst`,
 `/etc/update-motd.d/*`, script interpreters' arguments. That is the false
 positive AGENTS.md rules out.
 
-So for `command_source = "auditd"`, candidates come only from execs whose
-program (basename of `a0`) is in the write-verb list AGENTS.md already
-names: `vim vi nano emacs cp mv cat tee sed awk install chmod chown`
-(`echo` is a shell builtin and never execs). Everything else is in
-`commands.log` but yields no candidates. Paths inside a quoted argument
-(`bash -c 'echo x > /etc/foo'`) are not extracted either: the quoting
-puts quote characters on the token, which `looks_like_path` rejects. A
-false negative, accepted. The programs that do the writing inside such a
-script are separate execs with their own argv.
+So for `command_source = "auditd"`, an exec yields candidates only if
+both of these hold. Everything else is in `commands.log` but yields no
+candidates.
 
-This is a new, small function in `file_capture` (`extract_paths` plus the
-verb check); `file_capture` still knows nothing about sessions. `main`
-picks it by `command_source`.
+**1. It is one of the session's own commands** (maintainer's decision,
+option b). Depth is counted in processes, from the `pid`/`ppid` of the
+SYSCALL records of the window (after the PAM-helper filter, §3):
+
+- A **root** is an exec whose parent did not exec anything in the window.
+  That is the process sshd started for the session, i.e. the user's
+  shell (`bash -c 'cmd'`, `sh -c sftp-server`).
+- **Depth 0**: execs with a root's pid. A shell that runs a single command
+  execs it in place, so `ssh host 'sed -i … /etc/x'` gives `sed` at
+  depth 0, under the shell's pid.
+- **Depth 1**: execs whose `ppid` is a depth-0 pid: what the shell forks,
+  e.g. `cp` and `systemctl` in `ssh host 'cp a /etc/x && systemctl reload x'`,
+  or the program `sudo` runs in `ssh host 'sudo sed -i … /etc/x'`.
+- **Deeper: no candidates.** That drops what package maintainer scripts
+  run under `apt`/`dpkg`, and what a script started by the user's command
+  runs inside it.
+
+The count is by process, not by intent. A script the user runs directly
+(`ssh host ./deploy.sh`) execs in place at depth 0, so the programs it
+starts are at depth 1 and do yield candidates. `sudo bash -c 'cp a /etc/x'`
+puts `cp` at depth 2, so it yields none: a false negative, accepted.
+
+**2. Its program is in the write-verb list of AGENTS.md** (my call):
+`vim vi nano emacs cp mv cat tee sed awk install chmod chown`, matched on
+the basename of `a0`. It is not the longer `WRITE_VERBS` in
+`src/file_capture.rs`, which includes `python3` and `perl`: every Ansible
+task runs `python3 …/AnsiballZ_*.py`. (`echo` is a shell builtin and
+never execs.) `WRITE_VERBS` and the shell-hook path stay as they are.
+
+Paths inside a quoted argument (`bash -c 'echo x > /etc/foo'`) are not
+extracted either: the quoting puts quote characters on the token, which
+`looks_like_path` rejects. A false negative, accepted. The programs that
+do the writing inside such a script are separate execs with their own
+argv.
+
+Where the code goes: `command_log` computes the depth and marks each
+auditd entry as a capture candidate or not. That is a fact about the
+command stream, not about files, so `CommandEntry` gets one more field,
+`capture_paths: bool` (always `true` for shell-hook entries, not written
+to `commands.log`). `file_capture` gets a small function: `extract_paths`
+plus the verb check. It still knows nothing about sessions. `main` only
+runs extraction on entries marked as candidates.
 
 ### Files written by scp/sftp
 
@@ -578,6 +599,9 @@ why. Nothing in this path can fail the PAM call: errors are caught in
 - Rendering: quoting of arguments with spaces, quotes, `$`, non-UTF-8.
 - `choose_source` for every combination.
 - Status table of the barrier (given events, marker found or not).
+- Depth: roots, in-place exec at depth 0, forked child at depth 1,
+  grandchild not a candidate; `sudo cmd` at depth 1; shell-hook entries
+  always candidates.
 - `file_capture`: the verb filter.
 - `config`: `[audit]` defaults and overrides; `auditd.conf` parsing
   (`log_file`, `write_logs`).
@@ -586,6 +610,8 @@ why. Nothing in this path can fail the PAM call: errors are caught in
 
 - Fixtures in `tests/fixtures/audit/`: `ssh-cmd.log` (`ssh host cmd`),
   `sftp.log`, `scp-legacy.log`, `sudo-i.log` (uid changes, `ses` stays),
+  `apt-install.log` (maintainer scripts' `cp`/`chmod` deep in the tree:
+  in `commands.log`, no candidates),
   `motd.log` (pam_motd helpers after session-open), `noise.log` (two sessions and
   a cron job interleaved), `enriched.log` and `raw.log`. Written from the
   documented format first; replaced by recordings from a test VM during
@@ -636,7 +662,8 @@ Nothing needs auditd, root or a real kernel; CI stays as it is.
    file, `choose_source`; export `FakeCommandSource` (Q3).
 3. `config`: `[audit]` with `log_file`, `wait_ms`, `max_commands`;
    auditd.conf reader.
-4. `file_capture`: verb-filtered extraction.
+4. `command_log`: depth and `CommandEntry.capture_paths`;
+   `file_capture`: verb-filtered extraction.
 5. `bundle`: `command_source`, `audit_status`, `commands_truncated`.
 6. `main`: `install-audit` (per-arch file, load check, rollback),
    `uninstall-audit`, the hint in `install-pam`, removal in
