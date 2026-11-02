@@ -48,6 +48,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `read error: …` (now also for a path that cannot be looked at, e.g.
   permission denied, which used to count as not found).
 - **`commands.log` ends with a newline** (#6) — the last line had none.
+- **Sessions starting in the same second no longer overwrite each other**
+  (#5) — two sessions of the same user that started in the same second
+  got the same bundle name: the second wrote over the first one's files,
+  and the local transport then failed to move it into the nest, leaving a
+  `.tmp_*` directory behind. The second bundle is now named
+  `{YYYY-MM-DD_HH-MM-SS}_{user}_2` (then `_3`, …), both when it is
+  assembled and when the local transport finds the name already taken in
+  the nest. The local transport also removes its `.tmp_*` directory when
+  shipping fails.
 
 ### Changed
 

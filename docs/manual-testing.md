@@ -91,6 +91,7 @@ Log out. On the nest, verify the bundle appeared:
 ```bash
 ls -la /var/mina/<hostname>/
 # Expect: one directory named YYYY-MM-DD_HH-MM-SS_<user>
+# (with a _2, _3, … suffix if a session of the same user started in the same second)
 
 cat /var/mina/<hostname>/*/session.json
 # Expect: correct user, source_ip, started_at, ended_at, files_captured >= 1

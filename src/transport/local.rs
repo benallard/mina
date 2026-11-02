@@ -9,9 +9,15 @@
 ///
 /// Atomicity: the bundle is copied to a temporary sibling directory first,
 /// then renamed into its final position — so a partial copy never appears
-/// at the destination.
-use anyhow::{Context, Result};
+/// at the destination. The temporary directory is removed if any step
+/// fails.
+///
+/// If a bundle with the same name is already in the nest (two sessions of
+/// the same user started in the same second), `_2`, `_3`, … is appended.
+use anyhow::{bail, Context, Result};
+use std::ffi::OsStr;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use super::Transport;
@@ -34,40 +40,93 @@ impl Transport for LocalTransport {
             .context("bundle_root has no final component")?;
 
         let dest_host_dir = self.destination.join(host_name);
-        let final_dest = dest_host_dir.join(bundle_name);
-
-        // Temporary name: same location, underscore-prefixed, so it is
-        // invisible to readers that scan for the canonical pattern.
-        let tmp_dest = dest_host_dir.join(format!(".tmp_{}", bundle_name.to_string_lossy()));
-
         fs::create_dir_all(&dest_host_dir)
             .with_context(|| format!("failed to create {}", dest_host_dir.display()))?;
 
-        // 1. Copy into tmp location
-        copy_dir_recursive(bundle_root, &tmp_dest).with_context(|| {
-            format!(
-                "failed to copy bundle from {} to {}",
-                bundle_root.display(),
-                tmp_dest.display()
-            )
-        })?;
+        // Temporary name: same location, dot-prefixed, so it is invisible to
+        // readers that scan for the canonical pattern. The process id keeps
+        // two sessions closing at once from sharing it.
+        let tmp_dest = dest_host_dir.join(format!(
+            ".tmp_{}_{}",
+            bundle_name.to_string_lossy(),
+            std::process::id()
+        ));
+        fs::create_dir(&tmp_dest)
+            .with_context(|| format!("failed to create {}", tmp_dest.display()))?;
 
-        // 2. Set all files read-only before the rename so the bundle is
-        //    already immutable the moment it becomes visible.
-        set_readonly_recursive(&tmp_dest)
-            .with_context(|| format!("failed to set read-only on {}", tmp_dest.display()))?;
-
-        // 3. Atomic rename into final position
-        fs::rename(&tmp_dest, &final_dest).with_context(|| {
-            format!(
-                "failed to rename {} → {}",
-                tmp_dest.display(),
-                final_dest.display()
-            )
-        })?;
-
-        Ok(())
+        let result = fill_and_publish(bundle_root, &tmp_dest, &dest_host_dir, bundle_name);
+        if result.is_err() {
+            // Best effort: the error being returned is the one that matters.
+            let _ = fs::remove_dir_all(&tmp_dest);
+        }
+        result
     }
+}
+
+/// How many names `fill_and_publish` tries before giving up.
+const MAX_NAME_ATTEMPTS: u32 = 100;
+
+/// Copy the bundle into `tmp_dest`, make it read-only and rename it to
+/// `bundle_name` in `dest_host_dir` — or to `bundle_name_2`, `_3`, … if
+/// that name is already taken. Never replaces an existing bundle.
+fn fill_and_publish(
+    bundle_root: &Path,
+    tmp_dest: &Path,
+    dest_host_dir: &Path,
+    bundle_name: &OsStr,
+) -> Result<()> {
+    // 1. Copy into tmp location
+    copy_dir_recursive(bundle_root, tmp_dest).with_context(|| {
+        format!(
+            "failed to copy bundle from {} to {}",
+            bundle_root.display(),
+            tmp_dest.display()
+        )
+    })?;
+
+    // 2. Set all files read-only before the rename so the bundle is
+    //    already immutable the moment it becomes visible.
+    set_readonly_recursive(tmp_dest)
+        .with_context(|| format!("failed to set read-only on {}", tmp_dest.display()))?;
+
+    // 3. Atomic rename into the first free final position
+    for n in 1..=MAX_NAME_ATTEMPTS {
+        let mut name = bundle_name.to_owned();
+        if n > 1 {
+            name.push(format!("_{n}"));
+        }
+        let final_dest = dest_host_dir.join(name);
+        // rename() replaces an empty directory, so check first; the error
+        // kinds below cover a bundle appearing in between.
+        if final_dest.symlink_metadata().is_ok() {
+            continue;
+        }
+        match fs::rename(tmp_dest, &final_dest) {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::AlreadyExists | ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                continue
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "failed to rename {} → {}",
+                        tmp_dest.display(),
+                        final_dest.display()
+                    )
+                })
+            }
+        }
+    }
+    bail!(
+        "no free name for bundle {} in {} after {MAX_NAME_ATTEMPTS} attempts",
+        bundle_name.to_string_lossy(),
+        dest_host_dir.display()
+    )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -196,5 +255,79 @@ mod tests {
             "no temporary directories should remain: {entries:?}"
         );
         assert_eq!(entries.len(), 1);
+    }
+
+    fn tmp_entries(host_dir: &Path) -> Vec<String> {
+        fs::read_dir(host_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with(".tmp_"))
+            .collect()
+    }
+
+    #[test]
+    fn existing_bundle_with_the_same_name_is_kept() {
+        let staging = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let bundle_root = make_fake_bundle(staging.path());
+        let host_dir = dest.path().join("web-01");
+        let existing = host_dir.join("2025-06-01_12-00-00_alice");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("session.json"), b"{\"first\": true}").unwrap();
+
+        LocalTransport {
+            destination: dest.path().to_owned(),
+        }
+        .ship(&bundle_root)
+        .unwrap();
+
+        assert_eq!(
+            fs::read(existing.join("session.json")).unwrap(),
+            b"{\"first\": true}"
+        );
+        let second = host_dir.join("2025-06-01_12-00-00_alice_2");
+        assert_eq!(fs::read(second.join("session.json")).unwrap(), b"{}");
+        assert!(second.join("commands.log").exists());
+        assert!(tmp_entries(&host_dir).is_empty());
+    }
+
+    #[test]
+    fn failed_rename_leaves_no_tmp_dir() {
+        let staging = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let bundle_root = make_fake_bundle(staging.path());
+        let host_dir = dest.path().join("web-01");
+        fs::create_dir_all(host_dir.join("2025-06-01_12-00-00_alice")).unwrap();
+        for n in 2..=MAX_NAME_ATTEMPTS {
+            fs::create_dir(host_dir.join(format!("2025-06-01_12-00-00_alice_{n}"))).unwrap();
+        }
+
+        let result = LocalTransport {
+            destination: dest.path().to_owned(),
+        }
+        .ship(&bundle_root);
+
+        assert!(result.is_err());
+        assert!(tmp_entries(&host_dir).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_copy_leaves_no_tmp_dir() {
+        let staging = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let bundle_root = make_fake_bundle(staging.path());
+        // A dangling symlink cannot be copied, whoever runs the test.
+        std::os::unix::fs::symlink("/nonexistent/mina-test", bundle_root.join("broken")).unwrap();
+
+        let result = LocalTransport {
+            destination: dest.path().to_owned(),
+        }
+        .ship(&bundle_root);
+
+        assert!(result.is_err());
+        let host_dir = dest.path().join("web-01");
+        assert!(tmp_entries(&host_dir).is_empty());
+        assert!(!host_dir.join("2025-06-01_12-00-00_alice").exists());
     }
 }

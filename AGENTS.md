@@ -121,6 +121,9 @@ Default: 512KB. Files over the limit are skipped and noted.
             └── {mirrored absolute path of each captured file}
 ```
 
+If two sessions of the same user start in the same second, the second
+bundle gets a `_2` suffix (then `_3`, …) instead of overwriting the first.
+
 Do not change this layout without a migration path. External tools
 (scripts, `grep`, `diff`) depend on it being predictable and human-readable.
 
