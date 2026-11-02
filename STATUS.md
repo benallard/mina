@@ -27,11 +27,11 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | 11 | Session state persistence | `src/pam_hook.rs`, `src/main.rs` | ✅ Done | `SessionState` save/load/remove; keyed on sshd PPID |
 | 12 | `session-close` orchestration | `src/main.rs` | ✅ Done | Full pipeline: commands → paths → snapshot → bundle → ship (retry once) → cleanup |
 | 13 | `install-pam` / `uninstall-pam` | `src/main.rs` | ✅ Done | pam_exec block (idempotent), profile.d copy, tmpfiles.d, config bootstrap |
-| 14 | HTTPS transport | `src/transport/https.rs` | ❌ Stub | `bail!("not yet implemented")` |
+| 14 | HTTPS transport | `src/transport/https.rs`, `src/transport/tarball.rs` | ✅ Done | One POST of a deterministic gzip tar with a SHA-256 digest header; optional mTLS (cert, key, CA read on every ship); 2xx = success; 18 unit tests. No receiver yet (item 15) |
 | 15 | Nest ingest server | `src/nest.rs` | ❌ Stub | `println!("not yet implemented")` |
 | 16 | Auditd source | `src/command_log.rs` | ❌ Stub | `bail!("not yet implemented")`. Until it lands, sessions without a login shell (`ssh host cmd`, scp, sftp) record no commands; their `session.json` says `"shell_hook": false` (#1) |
 | 17 | Tier 2 integration tests | `tests/` | ❌ Missing | Directory does not exist |
-| 18 | Config validation | `src/config.rs` | ❌ Missing | No TLS enforcement, no cross-field checks |
+| 18 | Config validation | `src/config.rs` | 🟡 Partial | `NestConfig::https_settings` checks the `https_*` keys (scheme, host, cert+key pair) when `transport = "https"`; no other cross-field checks |
 
 ---
 
@@ -47,7 +47,7 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | Q6 | `pam_hook.rs` | ~~`EnvPamSession` does not capture the **session PID**.~~ ✅ Fixed — PID comes from the state file written at `session-open`. |
 | Q7 | `transport/ssh.rs` | ~~No **retry** on rsync failure.~~ ✅ Fixed — `ship_with_retry` in `main.rs` retries once (AGENTS.md satisfied). |
 | Q8 | `transport/*.rs` | Neither transport logs to **syslog** on failure (AGENTS.md requirement). |
-| Q9 | `config.rs` | `https_endpoint` is not validated for `https://` scheme at load time. |
+| Q9 | `config.rs` | ~~`https_endpoint` is not validated for `https://` scheme at load time.~~ ✅ Fixed — checked when the HTTPS transport is built, after staging, so a bad setting keeps the bundle. |
 
 ---
 
@@ -65,7 +65,7 @@ Work items in priority order. Check them off as they land.
 - [ ] **Step 6** — Create `tests/` with Tier 2 integration tests (full lifecycle, FakePam + FakeCommandSource)
 - [ ] **Step 7** — Fix Q1–Q6 quality issues (is_text_file, timestamps, FakeCommandSource, SkipReason, staging_dir, session PID)
 - [ ] **Step 8** — `Config::validate()` — TLS scheme enforcement, cross-field checks (Q9)
-- [ ] **Step 9** — `HttpsTransport`: tarball creation + ureq/curl POST
+- [x] **Step 9** — `HttpsTransport`: tarball creation + ureq POST, optional mTLS
 - [ ] **Step 10** — `src/nest.rs`: minimal HTTP ingest server (TLS terminated by reverse proxy)
 - [ ] **Step 11** — `AuditdSource`: `ausearch` integration, scoped by the audit session id (`ses=`), so sessions without a shell record commands too (#1)
 - [ ] **Step 12** — Pre-release: run manual testing runbook (`docs/manual-testing.md`), tag `v0.1.0`

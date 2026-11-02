@@ -363,21 +363,93 @@ the `staging_dir` line and `/srv/mina-staging-test` afterwards.
 
 ---
 
-## 8. HTTPS transport (if configured)
+## 8. HTTPS transport
 
-Start the nest server on the nest machine:
+`mina-nest` is not written yet, so this test uses nginx with client-cert
+verification in front of a tiny endpoint that saves each body.
+
+On the nest machine, make a throwaway CA, a server cert and a client cert
+(use the nest's real name or IP as `NEST`):
 ```bash
-mina-nest serve --dir /var/mina --port 8765
+NEST=nest.example.test
+mkdir -p ~/mina-tls && cd ~/mina-tls
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -keyout ca.key -out ca.pem -days 7 -subj /CN=mina-manual-test-ca
+for n in server client; do
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+      -keyout $n.key -out $n.csr -subj /CN=$n
+done
+printf 'subjectAltName=DNS:%s\n' "$NEST" > san.ext
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -out server.pem -days 7 -extfile san.ext
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -out client.pem -days 7
 ```
 
-Update `/etc/mina.toml` on the test machine:
+nginx site (`/etc/nginx/sites-enabled/mina-test`):
+```nginx
+server {
+    listen 443 ssl;
+    ssl_certificate        /root/mina-tls/server.pem;
+    ssl_certificate_key    /root/mina-tls/server.key;
+    ssl_client_certificate /root/mina-tls/ca.pem;
+    ssl_verify_client      on;
+    client_max_body_size   64m;
+    location /ingest {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header X-Client-DN $ssl_client_s_dn;
+    }
+}
+```
+
+Receiver that saves each body under its digest:
+```bash
+mkdir -p /tmp/mina-in && cd /tmp/mina-in && python3 - <<'EOF'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        name = self.headers["X-Mina-Bundle-Digest"].split("=", 1)[1]
+        open(name + ".tar.gz", "wb").write(body)
+        print(self.headers["X-Client-DN"], self.headers["User-Agent"], name)
+        self.send_response(201); self.end_headers()
+HTTPServer(("127.0.0.1", 8080), H).serve_forever()
+EOF
+```
+
+Copy `ca.pem`, `client.pem`, `client.key` to `/etc/mina/` on the test
+machine (key `0600 root`) and set:
 ```toml
 [nest]
 transport = "https"
-https_endpoint = "http://nest-ip:8765/ingest"   # plain HTTP for local testing only
+https_endpoint    = "https://nest.example.test/ingest"
+https_client_cert = "/etc/mina/client.pem"
+https_client_key  = "/etc/mina/client.key"
+https_ca_cert     = "/etc/mina/ca.pem"
 ```
 
-Repeat test 3. Verify the bundle arrives at the nest via HTTP POST.
+Then check:
+
+1. **Success.** Repeat test 3. The receiver prints `CN=client`,
+   `mina/<version>` and a digest; `tar tzf <digest>.tar.gz` shows
+   `<hostname>/<bundle>/session.json`, `commands.log`, `files/…`;
+   `sha256sum` of the file equals the digest. Staging is empty.
+2. **No client cert.** Comment out `https_client_cert` and
+   `https_client_key`, log in and out: nginx answers 400, the bundle stays
+   in `/var/lib/mina/staging/<hostname>/`. Restore the keys.
+3. **Wrong CA.** Point `https_ca_cert` at any other PEM CA: session close
+   fails with an unknown-issuer error; bundle kept. Restore it.
+4. **Plain HTTP refused.** Set `https_endpoint = "http://…"`: session close
+   fails with `must start with https://`; bundle kept. Restore it.
+5. **Nest unreachable.** Stop nginx; time a logout: it returns within
+   about 2 × 10 s (two connect attempts); bundle kept. Start nginx.
+6. **Renewal picked up.** Issue a second client cert (`client2`) from the
+   same CA, overwrite `/etc/mina/client.pem` and `client.key` with it,
+   log in and out: the receiver prints `CN=client2`.
+7. **Resend has the same digest.** Make the receiver sleep 70 s before
+   answering (longer than the 60 s timeout), log in and out: two POSTs
+   arrive with the same `X-Mina-Bundle-Digest`.
+
+Clean up: remove the nginx site, `~/mina-tls`, `/tmp/mina-in` and the
+`/etc/mina/` test files.
 
 ---
 
