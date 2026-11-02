@@ -56,13 +56,25 @@ Nest  (central collector)
   "host": "web-prod-03",
   "user": "alice",
   "source_ip": "10.0.1.42",
+  "tty": "ssh",
   "started_at": "2025-06-01T14:32:05Z",
   "ended_at": "2025-06-01T14:47:22Z",
   "duration_seconds": 917,
+  "shell_hook": true,
   "files_captured": 2,
   "commands_recorded": 34
 }
 ```
+
+`shell_hook` says whether a login shell loaded mina's shell hook, so that
+commands could be recorded. `ssh host cmd`, scp and sftp start no login
+shell: their bundles have `"shell_hook": false` and an empty
+`commands.log` by design, not because recording failed. Commands of such
+sessions are not recorded until the auditd command source exists.
+
+`tty` is `PAM_TTY` at session open, or `null` when unset. A console login
+gives the terminal (`tty1`); sshd on Linux always gives `ssh`, with or
+without a pty, so it does not tell interactive SSH sessions apart.
 
 **`commands.log`**
 ```
