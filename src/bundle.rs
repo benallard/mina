@@ -10,6 +10,9 @@
 ///     commands.log
 ///     files/{mirrored absolute path}
 ///
+/// If the bundle name is already taken (two sessions of the same user
+/// started in the same second), `_2`, `_3`, … is appended to it.
+///
 /// `commands.log` has one line per command, each ending in a newline:
 ///
 ///   <timestamp>\t<command>
@@ -21,7 +24,7 @@
 /// whole command. This is for reading and grepping: backslashes are not
 /// escaped, so such a command cannot be told apart from one that contained
 /// a literal `\n`.
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -64,9 +67,10 @@ impl Bundle {
         commands: Vec<CommandEntry>,
         captures: Vec<(PathBuf, CaptureOutcome)>,
     ) -> Result<Self> {
-        let bundle_name = bundle_name(&meta);
-        let root = staging_dir.join(&meta.host).join(&bundle_name);
-        std::fs::create_dir_all(&root)?;
+        let host_dir = staging_dir.join(&meta.host);
+        std::fs::create_dir_all(&host_dir)
+            .with_context(|| format!("failed to create {}", host_dir.display()))?;
+        let root = create_unique_dir(&host_dir, &bundle_name(&meta))?;
 
         // commands.log
         let commands_log: String = commands.iter().map(commands_log_line).collect();
@@ -120,6 +124,32 @@ fn bundle_name(meta: &SessionMeta) -> String {
         "{}_{}",
         meta.started_at.format("%Y-%m-%d_%H-%M-%S"),
         meta.user
+    )
+}
+
+/// How many names `create_unique_dir` tries before giving up.
+const MAX_NAME_ATTEMPTS: u32 = 100;
+
+/// Create `parent/name`, or `parent/name_2`, `parent/name_3`, … if that is
+/// taken, and return the directory created. Never reuses an existing one.
+fn create_unique_dir(parent: &Path, name: &str) -> Result<PathBuf> {
+    for n in 1..=MAX_NAME_ATTEMPTS {
+        let candidate = if n == 1 {
+            parent.join(name)
+        } else {
+            parent.join(format!("{name}_{n}"))
+        };
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e).with_context(|| format!("failed to create {}", candidate.display()))
+            }
+        }
+    }
+    bail!(
+        "no free bundle name for {name} in {} after {MAX_NAME_ATTEMPTS} attempts",
+        parent.display()
     )
 }
 
@@ -229,6 +259,45 @@ mod tests {
         let log = std::fs::read_to_string(bundle.root.join("commands.log")).unwrap();
         assert!(log.contains("cd /etc/nginx"));
         assert!(log.contains("vim nginx.conf"));
+    }
+
+    #[test]
+    fn bundles_with_the_same_name_are_both_kept() {
+        let staging = TempDir::new().unwrap();
+        let meta = fake_meta();
+        let name = bundle_name(&meta);
+        let first = Bundle::write(
+            staging.path(),
+            meta.clone(),
+            vec![CommandEntry::now("echo first")],
+            vec![],
+        )
+        .unwrap();
+        let second = Bundle::write(
+            staging.path(),
+            meta,
+            vec![CommandEntry::now("echo second")],
+            vec![],
+        )
+        .unwrap();
+
+        let host_dir = staging.path().join("web-prod-03");
+        assert_eq!(first.root, host_dir.join(&name));
+        assert_eq!(second.root, host_dir.join(format!("{name}_2")));
+        let first_log = std::fs::read_to_string(first.root.join("commands.log")).unwrap();
+        let second_log = std::fs::read_to_string(second.root.join("commands.log")).unwrap();
+        assert!(first_log.contains("echo first"));
+        assert!(second_log.contains("echo second"));
+    }
+
+    #[test]
+    fn unique_dir_gives_up_after_max_attempts() {
+        let parent = TempDir::new().unwrap();
+        std::fs::create_dir(parent.path().join("b")).unwrap();
+        for n in 2..=MAX_NAME_ATTEMPTS {
+            std::fs::create_dir(parent.path().join(format!("b_{n}"))).unwrap();
+        }
+        assert!(create_unique_dir(parent.path(), "b").is_err());
     }
 
     fn entry_at(rfc3339: &str, command: &str) -> CommandEntry {
