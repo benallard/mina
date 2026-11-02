@@ -40,9 +40,9 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | ID | Where | Issue |
 |----|---|---|
 | Q1 | `file_capture.rs` | `is_text_file` reads the **entire file** into memory, then only inspects the first 8 KB. Should open + read exactly 8 KB. |
-| Q2 | `bundle.rs` | `commands.log` timestamps are **time-only** (`%H:%M:%S`). Multi-day sessions lose the date. Use full ISO-8601. |
+| Q2 | `bundle.rs` | ~~`commands.log` timestamps are **time-only** (`%H:%M:%S`). Multi-day sessions lose the date. Use full ISO-8601.~~ ✅ Fixed (#6) — ISO-8601 UTC, trailing newline. |
 | Q3 | `command_log.rs` | `FakeCommandSource` is private inside `#[cfg(test)]` — cannot be reused in `tests/`. Export via `#[cfg(any(test, feature="testing"))]` or similar. |
-| Q4 | `file_capture.rs` | `snapshot` returns `SkipReason::NotFound` for **excluded** paths. Should be a dedicated `SkipReason::Excluded` for accurate `session.json` reporting. |
+| Q4 | `file_capture.rs` | ~~`snapshot` returns `SkipReason::NotFound` for **excluded** paths. Should be a dedicated `SkipReason::Excluded` for accurate `session.json` reporting.~~ ✅ Fixed (#6) — `Excluded` and `NotAFile` (directories), neither listed in `files_skipped`. |
 | Q5 | `config.rs` | ~~`staging_dir` has no default/constant.~~ ✅ Fixed — `staging_dir` field added to `Config` with default `/tmp/mina-staging`. |
 | Q6 | `pam_hook.rs` | ~~`EnvPamSession` does not capture the **session PID**.~~ ✅ Fixed — PID comes from the state file written at `session-open`. |
 | Q7 | `transport/ssh.rs` | ~~No **retry** on rsync failure.~~ ✅ Fixed — `ship_with_retry` in `main.rs` retries once (AGENTS.md satisfied). |

@@ -40,6 +40,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tree (at most 16 levels, stopping at PID 1) to the nearest ancestor with
   a session. A nested shell that cannot write the session's command log
   (`su - otheruser`) logs nothing instead of printing an error.
+- **Accurate `files_skipped` in `session.json`** (#6) — paths under
+  `skip_paths` and directories (e.g. after `ls /tmp/mina-staging/`) were
+  listed as `"not found or not a file"`. They were never meant to be
+  captured and are no longer listed. What remains has an accurate
+  reason: `not found`, `too large (…)`, `binary file`, or
+  `read error: …` (now also for a path that cannot be looked at, e.g.
+  permission denied, which used to count as not found).
+- **`commands.log` ends with a newline** (#6) — the last line had none.
 
 ### Changed
 
@@ -49,7 +57,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or a session still running across the upgrade) are still read, but
   relative paths in them are dropped instead of guessed. Re-run
   `mina install-pam` to update `/etc/profile.d/mina.sh`.
-  `commands.log` in the bundle is unchanged.
+- **`commands.log` lines carry a full date** (#6) — each line is now
+  `<timestamp>\t<command>` with an ISO-8601 UTC timestamp
+  (`2026-10-30T14:03:46Z`) instead of a time of day (`14:03:46`) in no
+  stated time zone, which was ambiguous for sessions crossing midnight.
+  Scripts that grep or parse `HH:MM:SS` at the start of a line need
+  adjusting. A line break inside a command is written as `\n`, so each
+  line stays one command.
 
 ---
 

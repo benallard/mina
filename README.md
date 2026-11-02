@@ -66,13 +66,16 @@ Nest  (central collector)
 
 **`commands.log`**
 ```
-14:32:11  cd /etc/nginx
-14:32:15  vim nginx.conf
-14:39:02  nginx -t
-14:39:08  systemctl reload nginx
-14:41:30  vim /opt/myapp/config.yml
-14:47:20  systemctl restart myapp
+2025-06-01T14:32:11Z	cd /etc/nginx
+2025-06-01T14:32:15Z	vim nginx.conf
+2025-06-01T14:39:02Z	nginx -t
+2025-06-01T14:39:08Z	systemctl reload nginx
+2025-06-01T14:41:30Z	vim /opt/myapp/config.yml
+2025-06-01T14:47:20Z	systemctl restart myapp
 ```
+
+One command per line: UTC timestamp, a tab, the command. A line break
+inside a command is written as `\n`.
 
 **`files/`** — each captured file stored at its mirrored path, content as-is at session close. Text files only; binaries are skipped silently.
 

@@ -124,7 +124,7 @@ mod tests {
         let root = staging.join("web-01").join("2025-06-01_12-00-00_alice");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("session.json"), b"{}").unwrap();
-        fs::write(root.join("commands.log"), b"12:00:00\tls -la\n").unwrap();
+        fs::write(root.join("commands.log"), b"2025-06-01T12:00:00Z\tls -la\n").unwrap();
         root
     }
 

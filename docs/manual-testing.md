@@ -96,7 +96,8 @@ cat /var/mina/<hostname>/*/session.json
 # Expect: correct user, source_ip, started_at, ended_at, files_captured >= 1
 
 cat /var/mina/<hostname>/*/commands.log
-# Expect: all four commands listed with timestamps
+# Expect: all four commands, one per line as <UTC timestamp>\t<command>,
+# e.g. 2026-10-30T14:03:46Z<TAB>cat /etc/hostname; the file ends in a newline
 
 cat "/var/mina/<hostname>/*/files/etc/hostname"
 # Expect: content of /etc/hostname as it was at session close
@@ -195,12 +196,18 @@ allowlist is used); no bundle is shipped at logout without a config.
 ## 4. Binary file is not captured
 
 ```bash
-cp /bin/ls /tmp/test_binary
-vim /tmp/test_binary   # open it (vim will warn it's binary), quit without saving
+cp /bin/ls /var/tmp/test_binary
+vim /var/tmp/test_binary   # open it (vim will warn it's binary), quit without saving
+ls /etc/ssh/               # a directory
+cat /tmp/anything          # under skip_paths (/tmp)
+cat /etc/no-such-file
 ```
 
-Verify in session.json that `/tmp/test_binary` appears in `files_skipped`
-with reason `binary file`, and does not appear under `files/`.
+Verify in session.json that `/var/tmp/test_binary` appears in
+`files_skipped` with reason `binary file`, and does not appear under
+`files/`; `/etc/no-such-file` is listed with reason `not found`.
+`/etc/ssh/` and `/tmp/anything` are not listed at all. (`/var/tmp` because
+`/tmp` is in the default `skip_paths`.)
 
 ---
 
