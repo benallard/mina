@@ -24,7 +24,8 @@ Work through the sections in order — each one rules out a layer of the stack.
 `/var/run` is a symlink to `/run` on modern Debian/Ubuntu. The two paths are
 identical. This guide uses `/run/mina` throughout.
 
-What *should* be in `/run/mina` during an active SSH session:
+What *should* be in `/run/mina` during an active SSH or console session
+(only the PAM services in `[session] pam_services` open one):
 
 | File | Written by | When |
 |---|---|---|
@@ -234,7 +235,7 @@ This bypasses PAM entirely and calls the binary exactly as `pam_exec` would,
 letting you see any errors directly:
 
 ```bash
-sudo PAM_USER=$USER PAM_RHOST=127.0.0.1 PAM_TYPE=open_session /usr/bin/mina session-open
+sudo PAM_SERVICE=sshd PAM_USER=$USER PAM_RHOST=127.0.0.1 PAM_TYPE=open_session /usr/bin/mina session-open
 echo "exit: $?"
 ls -la /run/mina/
 ```
@@ -242,6 +243,13 @@ ls -la /run/mina/
 **If a `<pid>.session` file appears:** the binary works; the issue is an
 environment difference when called via `pam_exec`. Compare the environment
 variables available to PAM vs. your shell.
+
+**If nothing appears and there is no error:** check `PAM_SERVICE`. Only the
+services in `[session] pam_services` in `/etc/mina.toml` (default `sshd` and
+`login`) open a session; for any other service, or without `PAM_SERVICE`,
+`session-open` and `session-close` exit silently. That is how cron, `su`,
+`sudo` and `systemd --user` are kept out when the PAM lines are in
+`common-session`.
 
 **If the command errors:** the error message is the root cause. Common cases:
 
@@ -431,16 +439,21 @@ bash --norc /etc/profile.d/mina.sh && echo "OK"
 ```bash
 source /etc/profile.d/mina.sh
 type _mina_log_command    # should now exist
-echo "PPID: $PPID"
-ls /run/mina/             # run a command, then check for $PPID.cmds
+echo "key: $_mina_session_key"
+ls /run/mina/             # run a command, then check for <key>.cmds
 ```
+
+The key is the nearest ancestor of the shell that has a `/run/mina/<pid>.session`
+file: the sshd (or login) process, the shell's parent or grandparent. In a
+`su -` or `sudo -i` shell it is the login session the command was typed in.
+If `$_mina_session_key` is unset, no ancestor within 16 levels has a session.
 
 **Check if the .cmds file is being written:**
 
 ```bash
 # After sourcing the hook and running a command:
-cat /run/mina/$PPID.cmds
-# Expect: timestamp<TAB>command lines
+cat /run/mina/$_mina_session_key.cmds
+# Expect: timestamp<TAB>cwd<TAB>command lines
 ```
 
 > The shell hook silently skips logging if `/run/mina` does not exist

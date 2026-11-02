@@ -58,7 +58,7 @@ Work items in priority order. Check them off as they land.
 - [x] **Step 1** — Add `clap` to `Cargo.toml`; wire all subcommands in `main.rs`
   (`install-pam`, `uninstall-pam`, `install-audit`, `session-open`, `session-close`, `version`)
 - [x] **Step 2** — Session state file: write on `session-open`, read on `session-close`
-  (`SessionState` in `pam_hook.rs`; session key = sshd child PPID; shell hook uses `$PPID`)
+  (`SessionState` in `pam_hook.rs`; session key = sshd child PPID; shell hook uses the nearest ancestor with a `.session`)
 - [x] **Step 3** — `session-close` orchestration: load state → read commands → extract paths → snapshot → bundle → ship (with retry) → cleanup
 - [x] **Step 4** — `install-pam` / `uninstall-pam`: pam_exec entries (guarded block, idempotent), profile.d deploy (with source fallback), tmpfiles.d entry, config bootstrap
 - [ ] **Step 5** — Syslog-on-failure for all transports (retry already done in Step 3)

@@ -104,6 +104,94 @@ cat "/var/mina/<hostname>/*/files/etc/hostname"
 
 ---
 
+## 3a. Only login services open a session
+
+The PAM lines may sit in a stack every service uses (Debian's
+`common-session`, via `pam-auth-update`). Only the services in
+`[session] pam_services` (default `["sshd", "login"]`) may open a session.
+
+For the tests below, put the mina lines in a shared stack: install the
+Debian package (`pam-auth-update`), or copy the `BEGIN mina` block from
+`/etc/pam.d/sshd` into `/etc/pam.d/common-session` and
+`/etc/pam.d/common-session-noninteractive` (remove it from `sshd` so it does
+not run twice). Note the bundle count first:
+`ls /var/mina/<hostname>/ | wc -l`.
+
+**Console login.** Log in on the VM console (tty1), run `cat /etc/hostname`,
+log out.
+
+```bash
+ls /var/mina/<hostname>/
+# Expect: one new bundle for the console user
+cat /var/mina/<hostname>/<newest>/session.json
+# Expect: source_ip null, user = console user
+cat /var/mina/<hostname>/<newest>/commands.log
+# Expect: cat /etc/hostname
+```
+
+**`sudo -i` and `su -` inside SSH.** Open an SSH session and run:
+
+```bash
+echo before
+sudo -i
+cat /etc/hostname
+exit
+su - root          # or another account you know the password of: see below
+echo inside-su
+exit
+echo after
+ls /run/mina/      # while still logged in
+```
+
+```bash
+# Expect while logged in: exactly one <pid>.session (the SSH session); no
+# extra .session for sudo or su.
+```
+
+Log out.
+
+```bash
+ls /var/mina/<hostname>/
+# Expect: exactly one new bundle (the SSH session)
+cat /var/mina/<hostname>/<newest>/commands.log
+# Expect: echo before, cat /etc/hostname, sudo -i, echo inside-su,
+#         su - root, echo after. bash logs a command at the next prompt,
+#         so `sudo -i` / `su - root` come after the commands typed inside
+#         them; the inner `exit` is not logged.
+cat /var/mina/<hostname>/<newest>/files/etc/hostname
+# Expect: captured
+```
+
+`su - <otheruser>` (not root): that user cannot write the SSH user's
+command log, so the commands typed as `<otheruser>` are not logged. Expect
+no error message at the prompt, and the commands before and after the `su`
+still in `commands.log`.
+
+**cron produces no bundle.** Add a job that runs every minute:
+
+```bash
+echo '* * * * * root true' | sudo tee /etc/cron.d/mina-test
+```
+
+Wait two minutes, then remove it:
+
+```bash
+sudo rm /etc/cron.d/mina-test
+ls /run/mina/
+# Expect: no .session file left behind by cron (nor by systemd --user)
+ls /var/mina/<hostname>/ | wc -l
+# Expect: unchanged by cron (only the bundles of the tests above)
+```
+
+**Allowlist is configurable.** Set `pam_services = ["sshd"]` in
+`[session]` of `/etc/mina.toml`, log in on the console and out again:
+expect no new bundle. Restore the default afterwards. With
+`/etc/mina.toml` temporarily moved away, SSH and console logins still
+work and a `<pid>.session` file still appears in `/run/mina` (the default
+allowlist is used); no bundle is shipped at logout without a config.
+
+---
+
 ## 4. Binary file is not captured
 
 ```bash
