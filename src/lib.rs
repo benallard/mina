@@ -8,4 +8,5 @@ pub mod command_log;
 pub mod config;
 pub mod file_capture;
 pub mod pam_hook;
+pub mod staging;
 pub mod transport;

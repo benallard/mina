@@ -1,8 +1,10 @@
 /// Local filesystem transport.
 ///
 /// Copies the bundle into a local destination directory, preserving the
-/// canonical nest layout (`{hostname}/{timestamp}_{user}/`), then marks
-/// every file read-only.  No network required.
+/// canonical nest layout (`{hostname}/{timestamp}_{user}/`), then makes
+/// it read-only and private to the owner: files `0400`, directories `0500`
+/// (on unix). The bundle can hold copies of files only root may read.
+/// No network required.
 ///
 /// Useful when the nest lives on the same machine, or during development
 /// and testing when no SSH / HTTPS endpoint is available.
@@ -10,7 +12,7 @@
 /// Atomicity: the bundle is copied to a temporary sibling directory first,
 /// then renamed into its final position — so a partial copy never appears
 /// at the destination. The temporary directory is removed if any step
-/// fails.
+/// fails (after making its directories writable again).
 ///
 /// If a bundle with the same name is already in the nest (two sessions of
 /// the same user started in the same second), `_2`, `_3`, … is appended.
@@ -29,7 +31,7 @@ pub struct LocalTransport {
 
 impl Transport for LocalTransport {
     fn ship(&self, bundle_root: &Path) -> Result<()> {
-        // bundle_root  = /tmp/mina-staging/{host}/{timestamp}_{user}/
+        // bundle_root  = /var/lib/mina/staging/{host}/{timestamp}_{user}/
         // We want to reproduce the same two-level structure under destination.
         let host_name = bundle_root
             .parent()
@@ -51,13 +53,13 @@ impl Transport for LocalTransport {
             bundle_name.to_string_lossy(),
             std::process::id()
         ));
-        fs::create_dir(&tmp_dest)
+        create_private_dir(&tmp_dest)
             .with_context(|| format!("failed to create {}", tmp_dest.display()))?;
 
         let result = fill_and_publish(bundle_root, &tmp_dest, &dest_host_dir, bundle_name);
         if result.is_err() {
             // Best effort: the error being returned is the one that matters.
-            let _ = fs::remove_dir_all(&tmp_dest);
+            remove_locked_tree(&tmp_dest);
         }
         result
     }
@@ -66,7 +68,7 @@ impl Transport for LocalTransport {
 /// How many names `fill_and_publish` tries before giving up.
 const MAX_NAME_ATTEMPTS: u32 = 100;
 
-/// Copy the bundle into `tmp_dest`, make it read-only and rename it to
+/// Copy the bundle into `tmp_dest`, lock it down and rename it to
 /// `bundle_name` in `dest_host_dir` — or to `bundle_name_2`, `_3`, … if
 /// that name is already taken. Never replaces an existing bundle.
 fn fill_and_publish(
@@ -84,10 +86,11 @@ fn fill_and_publish(
         )
     })?;
 
-    // 2. Set all files read-only before the rename so the bundle is
-    //    already immutable the moment it becomes visible.
-    set_readonly_recursive(tmp_dest)
-        .with_context(|| format!("failed to set read-only on {}", tmp_dest.display()))?;
+    // 2. Lock files and directories before the rename so the bundle is
+    //    already immutable the moment it becomes visible. Renaming a
+    //    directory within the same parent does not need write permission
+    //    on the directory itself.
+    lock_tree(tmp_dest).with_context(|| format!("failed to lock {}", tmp_dest.display()))?;
 
     // 3. Atomic rename into the first free final position
     for n in 1..=MAX_NAME_ATTEMPTS {
@@ -149,23 +152,72 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Recursively mark all files (not directories) as read-only.
-fn set_readonly_recursive(dir: &Path) -> Result<()> {
+/// Mode of every file in a shipped bundle.
+const FILE_MODE: u32 = 0o400;
+/// Mode of every directory in a shipped bundle.
+const DIR_MODE: u32 = 0o500;
+
+/// Create `dir`, accessible to its owner only.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+/// Recursively set files to `FILE_MODE` and directories, `dir` included,
+/// to `DIR_MODE`. Symlinks are not followed.
+fn lock_tree(dir: &Path) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            set_readonly_recursive(&path)?;
+        if entry.file_type()?.is_dir() {
+            lock_tree(&path)?;
         } else {
-            let mut perms = fs::metadata(&path)
-                .with_context(|| format!("metadata for {}", path.display()))?
-                .permissions();
-            perms.set_readonly(true);
-            fs::set_permissions(&path, perms)
-                .with_context(|| format!("set_permissions on {}", path.display()))?;
+            set_mode(&path, FILE_MODE)?;
         }
     }
-    Ok(())
+    set_mode(dir, DIR_MODE)
+}
+
+/// Remove a tree that `lock_tree` may have locked: make its directories
+/// writable again first, or the files in them could not be removed.
+/// Best effort.
+fn remove_locked_tree(dir: &Path) {
+    unlock_dirs(dir);
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn unlock_dirs(dir: &Path) {
+    let _ = set_mode(dir, 0o700);
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                unlock_dirs(&entry.path());
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .with_context(|| format!("set_permissions on {}", path.display()))
+}
+
+/// Without unix modes, only the owner-write bit means something: read-only.
+#[cfg(not(unix))]
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    let mut perms = fs::metadata(path)
+        .with_context(|| format!("metadata for {}", path.display()))?
+        .permissions();
+    perms.set_readonly(mode & 0o200 == 0);
+    fs::set_permissions(path, perms)
+        .with_context(|| format!("set_permissions on {}", path.display()))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -175,14 +227,35 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// A temporary nest. Shipped bundles have `0500` directories, which
+    /// `TempDir` cannot clean up unless the tests run as root.
+    struct Nest(TempDir);
+
+    impl Nest {
+        fn new() -> Self {
+            Nest(TempDir::new().unwrap())
+        }
+
+        fn path(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    impl Drop for Nest {
+        fn drop(&mut self) {
+            unlock_dirs(self.0.path());
+        }
+    }
+
     /// Build a minimal fake bundle tree:
     ///   staging/web-01/2025-06-01_12-00-00_alice/
     ///     session.json
     ///     commands.log
     fn make_fake_bundle(staging: &Path) -> PathBuf {
         let root = staging.join("web-01").join("2025-06-01_12-00-00_alice");
-        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.join("files/etc")).unwrap();
         fs::write(root.join("session.json"), b"{}").unwrap();
+        fs::write(root.join("files/etc/shadow"), b"root:*:19000::::::\n").unwrap();
         fs::write(root.join("commands.log"), b"2025-06-01T12:00:00Z\tls -la\n").unwrap();
         root
     }
@@ -190,7 +263,7 @@ mod tests {
     #[test]
     fn ships_bundle_to_destination() {
         let staging = TempDir::new().unwrap();
-        let dest = TempDir::new().unwrap();
+        let dest = Nest::new();
         let bundle_root = make_fake_bundle(staging.path());
 
         let transport = LocalTransport {
@@ -210,7 +283,7 @@ mod tests {
     #[test]
     fn shipped_files_are_read_only() {
         let staging = TempDir::new().unwrap();
-        let dest = TempDir::new().unwrap();
+        let dest = Nest::new();
         let bundle_root = make_fake_bundle(staging.path());
 
         LocalTransport {
@@ -231,11 +304,55 @@ mod tests {
         );
     }
 
+    /// Mode bits, not access checks: the tests may run as root.
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shipped_bundle_is_private_to_owner() {
+        let staging = TempDir::new().unwrap();
+        let dest = Nest::new();
+        let bundle_root = make_fake_bundle(staging.path());
+
+        LocalTransport {
+            destination: dest.path().to_owned(),
+        }
+        .ship(&bundle_root)
+        .unwrap();
+
+        let root = dest.path().join("web-01").join("2025-06-01_12-00-00_alice");
+        for file in ["session.json", "commands.log", "files/etc/shadow"] {
+            assert_eq!(mode_of(&root.join(file)), 0o400, "{file}");
+        }
+        for dir in ["", "files", "files/etc"] {
+            assert_eq!(mode_of(&root.join(dir)), 0o500, "{dir:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locked_tree_can_be_removed() {
+        let tmp = TempDir::new().unwrap();
+        let tree = tmp.path().join(".tmp_bundle");
+        fs::create_dir_all(tree.join("files/etc")).unwrap();
+        fs::write(tree.join("files/etc/shadow"), b"x").unwrap();
+        lock_tree(&tree).unwrap();
+        assert_eq!(mode_of(&tree.join("files/etc")), 0o500);
+
+        remove_locked_tree(&tree);
+
+        assert!(!tree.exists());
+    }
+
     #[test]
     fn no_partial_bundle_visible_at_final_path() {
         // Verify that the tmp directory is cleaned up and the final dir is present.
         let staging = TempDir::new().unwrap();
-        let dest = TempDir::new().unwrap();
+        let dest = Nest::new();
         let bundle_root = make_fake_bundle(staging.path());
 
         LocalTransport {
@@ -268,7 +385,7 @@ mod tests {
     #[test]
     fn existing_bundle_with_the_same_name_is_kept() {
         let staging = TempDir::new().unwrap();
-        let dest = TempDir::new().unwrap();
+        let dest = Nest::new();
         let bundle_root = make_fake_bundle(staging.path());
         let host_dir = dest.path().join("web-01");
         let existing = host_dir.join("2025-06-01_12-00-00_alice");
@@ -294,7 +411,7 @@ mod tests {
     #[test]
     fn failed_rename_leaves_no_tmp_dir() {
         let staging = TempDir::new().unwrap();
-        let dest = TempDir::new().unwrap();
+        let dest = Nest::new();
         let bundle_root = make_fake_bundle(staging.path());
         let host_dir = dest.path().join("web-01");
         fs::create_dir_all(host_dir.join("2025-06-01_12-00-00_alice")).unwrap();
@@ -315,7 +432,7 @@ mod tests {
     #[test]
     fn failed_copy_leaves_no_tmp_dir() {
         let staging = TempDir::new().unwrap();
-        let dest = TempDir::new().unwrap();
+        let dest = Nest::new();
         let bundle_root = make_fake_bundle(staging.path());
         // A dangling symlink cannot be copied, whoever runs the test.
         std::os::unix::fs::symlink("/nonexistent/mina-test", bundle_root.join("broken")).unwrap();

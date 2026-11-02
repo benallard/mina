@@ -205,13 +205,13 @@ A query CLI (`mina-cli`) is on the roadmap.
 |---|---|---|
 | **SSH / rsync** | Agent rsyncs the bundle to the nest over SSH at session close. Uses existing port 22, existing key infrastructure. | Most fleets — no new ports, no new services |
 | **HTTPS POST** | Agent POSTs a tarball to a small HTTP endpoint on the nest. TLS only. | Fleets with strict egress rules, VPNs, or where SSH to a central host is blocked |
-| **Local** | Agent copies the bundle into a local directory and marks every file read-only. No network, no remote host. | Single-machine setups, air-gapped systems, or development / testing without a nest server |
+| **Local** | Agent copies the bundle into a local directory, readable by root only (files `0400`, directories `0500`). No network, no remote host. | Single-machine setups, air-gapped systems, or development / testing without a nest server |
 
 Transport is selected at install time via `mina.toml`. Both SSH and HTTPS can coexist if you have mixed environments.
 
 > **VPN / port-blocked environments:** use HTTPS transport. The nest endpoint can sit behind a reverse proxy (nginx, Caddy) on port 443, which passes through virtually all corporate firewalls and VPNs.
 
-> **Single-machine or air-gapped environments:** use local transport. Bundles land in `/var/mina` (or any configured path) on the same machine, owned by root, read-only. Pair with `logrotate` or a cron job to manage retention.
+> **Single-machine or air-gapped environments:** use local transport. Bundles land in `/var/mina` (or any configured path) on the same machine, owned by root, read-only. Create the nest closed to other users — `install -d -m 0750 -o root -g adm /var/mina` — since bundles hold copies of files only root may read. Pair with `logrotate` or a cron job to manage retention.
 
 
 - **Real-time alerting** — Mina reports at session close, not live. Use Falco or auditd rules if you need live tripwires.
@@ -222,6 +222,7 @@ Transport is selected at install time via `mina.toml`. Both SSH and HTTPS can co
 ## Security considerations
 
 - The Mina agent runs as root (required for PAM hooks). The binary should be owned root, mode 755, and verified via checksum after install.
+- Bundles can contain copies of root-only files (e.g. `/etc/shadow` after `cat /etc/shadow`). `session-close` runs with umask `077`, assembles bundles in `staging_dir` (default `/var/lib/mina/staging`, created `0700`) and removes them from there once shipped. It refuses a staging directory that is a symlink, not owned by root, or writable by group or other. Keep the nest restrictive too: `/var/mina` `0750 root:adm`.
 - The nest SSH key should be **write-only**. Mina never needs to read from the nest. Enforce this in `~mina/.ssh/authorized_keys` with a forced command:
 
   ```

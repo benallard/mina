@@ -61,7 +61,7 @@ pub struct SkippedFile {
 
 pub struct Bundle {
     /// Root of the bundle directory, e.g.:
-    /// /tmp/mina-staging/web-prod-03/2025-06-01_14-32-05_alice/
+    /// /var/lib/mina/staging/web-prod-03/2025-06-01_14-32-05_alice/
     pub root: PathBuf,
 }
 

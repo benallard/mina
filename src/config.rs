@@ -15,7 +15,9 @@ pub struct Config {
     pub session: SessionConfig,
 
     /// Staging directory where bundles are assembled before being shipped.
-    /// Default: /tmp/mina-staging
+    /// Default: /var/lib/mina/staging. Created `0700` if missing; must be a
+    /// real directory (not a symlink) owned by root and not writable by
+    /// group or other, or `session-close` refuses to write the bundle.
     #[serde(default = "default_staging_dir")]
     pub staging_dir: std::path::PathBuf,
 }
@@ -103,7 +105,7 @@ fn default_size_limit() -> u64 {
 }
 
 fn default_staging_dir() -> std::path::PathBuf {
-    std::path::PathBuf::from("/tmp/mina-staging")
+    std::path::PathBuf::from("/var/lib/mina/staging")
 }
 
 fn default_ssh_key_path() -> String {
@@ -128,6 +130,12 @@ impl Config {
 // ── Example config rendered as a &str (used by `mina install`) ──────────────
 
 pub const EXAMPLE_CONFIG: &str = r#"
+# Where bundles are assembled before shipping; removed once shipped. Created
+# 0700 if missing. Must be owned by root, not group/other-writable and not a
+# symlink, or session-close refuses to use it. Top-level key: keep it above
+# the first [table].
+# staging_dir = "/var/lib/mina/staging"
+
 [nest]
 transport = "ssh"                         # "ssh", "https", or "local"
 ssh_destination = "mina@nest.example.com:/var/mina"
@@ -141,8 +149,6 @@ skip_paths = ["/proc", "/sys", "/dev", "/tmp", "/run"]
 
 [session]
 pam_services = ["sshd", "login"]          # PAM services that open a session (SSH, console)
-
-# staging_dir = "/tmp/mina-staging"       # where bundles are assembled before shipping
 "#;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -157,6 +163,22 @@ mod tests {
         assert_eq!(config.nest.transport, TransportKind::Ssh);
         assert_eq!(config.capture.text_size_limit_kb, 512);
         assert_eq!(config.session.pam_services, ["sshd", "login"]);
+    }
+
+    #[test]
+    fn staging_dir_defaults_outside_tmp() {
+        let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+        assert_eq!(config.staging_dir, PathBuf::from("/var/lib/mina/staging"));
+    }
+
+    #[test]
+    fn staging_dir_configurable() {
+        let text = EXAMPLE_CONFIG.replace(
+            "# staging_dir = \"/var/lib/mina/staging\"",
+            "staging_dir = \"/srv/mina-staging\"",
+        );
+        let config: Config = toml::from_str(&text).unwrap();
+        assert_eq!(config.staging_dir, PathBuf::from("/srv/mina-staging"));
     }
 
     #[test]
