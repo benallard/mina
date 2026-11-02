@@ -826,14 +826,9 @@ fn build_transport(config: &Config) -> Result<Box<dyn Transport>> {
                 key_path: config.nest.ssh_key_path.clone(),
             }))
         }
-        TransportKind::Https => {
-            let endpoint = config
-                .nest
-                .https_endpoint
-                .clone()
-                .context("nest.https_endpoint is required when transport = \"https\"")?;
-            Ok(Box::new(HttpsTransport { endpoint }))
-        }
+        TransportKind::Https => Ok(Box::new(HttpsTransport {
+            settings: config.nest.https_settings()?,
+        })),
         TransportKind::Local => {
             let destination = config
                 .nest

@@ -138,7 +138,7 @@ pub fn decode_value(raw: &str) -> Option<Vec<u8>> {
     if let Some(inner) = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
         return Some(inner.as_bytes().to_vec());
     }
-    if raw.is_empty() || !raw.len().is_multiple_of(2) {
+    if raw.is_empty() || raw.len() % 2 != 0 {
         return None;
     }
     (0..raw.len())

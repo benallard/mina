@@ -9,6 +9,7 @@ use std::path::Path;
 pub mod https;
 pub mod local;
 pub mod ssh;
+pub mod tarball;
 
 /// All transport backends implement this trait.
 pub trait Transport {

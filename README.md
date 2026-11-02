@@ -113,6 +113,8 @@ inside a command is written as `\n`.
 - `auditd` — optional; needed to record the commands of sessions without
   a login shell (`ssh host cmd`, scp, sftp)
 - Mina agent binary (single static Rust binary, no runtime dependencies)
+- HTTPS transport only: the system CA store (`/etc/ssl/certs`, from
+  `ca-certificates`), unless `https_ca_cert` points at the nest's CA
 
 **On the nest:**
 - Any Linux machine with SSH access and a writable directory, **or**
@@ -208,6 +210,9 @@ mina-nest serve --dir /var/mina --port 8765
 # Put it behind nginx/caddy with TLS for production use
 ```
 
+The `mina-nest` receiver is not written yet. Any HTTPS endpoint that meets
+the [wire contract](#https-with-mutual-tls) works.
+
 ## Browsing reports
 
 Reports are plain directories — use whatever you already know:
@@ -241,6 +246,42 @@ Transport is selected at install time via `mina.toml`. Both SSH and HTTPS can co
 
 > **VPN / port-blocked environments:** use HTTPS transport. The nest endpoint can sit behind a reverse proxy (nginx, Caddy) on port 443, which passes through virtually all corporate firewalls and VPNs.
 
+### HTTPS with mutual TLS
+
+Many fleets already give every machine a client certificate (for package
+repositories, VPNs, config management). Point Mina at it and the nest can
+authenticate the machine — no extra secret to distribute:
+
+```toml
+[nest]
+transport = "https"
+https_endpoint    = "https://nest.example.com/ingest"
+https_client_cert = "/etc/mina/client.crt"   # PEM, full chain leaf first
+https_client_key  = "/etc/mina/client.key"   # unencrypted PEM key
+https_ca_cert     = "/etc/mina/nest-ca.crt"  # optional: trust only this CA
+```
+
+- Cert and key are set together or not at all; without them Mina uses
+  plain server-authenticated TLS. Plain `http://` is refused, and there is
+  no option to skip verification.
+- Without `https_ca_cert` the nest is verified against the system CA store.
+- The files are read at every session close, so a certificate renewed on
+  disk (by a timer, say) is used from the next logout on.
+- Shipping happens at logout: at most 10 s to connect and 60 s per
+  attempt, one retry. If both fail the bundle stays in `staging_dir`.
+
+**Wire contract** for whatever receives the bundles: one `POST` to
+`https_endpoint` with `Content-Type: application/gzip`,
+`User-Agent: mina/<version>` and `X-Mina-Bundle-Digest: sha256=<hex>`. The
+body is a gzip tar with exactly one `{hostname}/` holding exactly one
+`{YYYY-MM-DD_HH-MM-SS}_{user}/` bundle. Any 2xx is success. The receiver
+should unpack to a temporary place and rename into the nest, refuse
+entries that leave the bundle directory, and treat a bundle whose name
+*and* digest it already has as a resend (answer 2xx, keep one copy);
+same name, different digest gets the `_2` suffix. Whether to trust the
+self-reported `{hostname}` or derive it from the client certificate is
+the receiver's policy.
+
 > **Single-machine or air-gapped environments:** use local transport. Bundles land in `/var/mina` (or any configured path) on the same machine, owned by root, read-only. Create the nest closed to other users — `install -d -m 0750 -o root -g adm /var/mina` — since bundles hold copies of files only root may read. Pair with `logrotate` or a cron job to manage retention.
 
 
@@ -260,6 +301,7 @@ Transport is selected at install time via `mina.toml`. Both SSH and HTTPS can co
   ```
 
   The `command=` prefix means SSH will only ever execute that exact rsync invocation, regardless of what the connecting agent requests. The restriction flags (`no-port-forwarding` etc.) close any remaining escape hatches. With this in place, a compromised agent key can push new bundles but cannot read existing ones, cannot open a shell, and cannot tunnel traffic through the nest.
+- With the HTTPS transport, use mutual TLS where you can, so the nest only accepts bundles from machines it knows. The nest's trust in a client certificate is only as strong as the protection of its key file on the machine.
 - Session bundles may contain sensitive file contents. Secure the nest accordingly — treat it like a backup server.
 - Mina does not record keystrokes: no `pam_tty_audit`. With auditd it reads exec records (program and arguments), never terminal input.
 

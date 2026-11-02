@@ -33,6 +33,18 @@ ssh_destination = "mina@nest.example.com:/var/mina"
 # HTTPS endpoint (required when transport = "https").
 # https_endpoint = "https://nest.example.com/ingest"
 
+# Optional: present a client certificate to the nest (mutual TLS).
+# Both or neither. PEM; the cert file may hold the full chain, leaf first.
+# The key must be unencrypted (PKCS#8, PKCS#1 or SEC1 PEM). Both files are
+# read at every session close, so a renewed certificate is picked up.
+# https_client_cert = "/etc/mina/client.crt"
+# https_client_key  = "/etc/mina/client.key"
+
+# Optional: verify the nest against this CA certificate (PEM, one or more
+# certs) instead of the system CA store (/etc/ssl/certs, from the
+# ca-certificates package). A machine without that store must set this.
+# https_ca_cert = "/etc/mina/nest-ca.crt"
+
 # Local destination (required when transport = "local").
 # The directory is created automatically if it does not exist. Keep it
 # closed to other users, e.g. `install -d -m 0750 -o root -g adm /var/mina`.

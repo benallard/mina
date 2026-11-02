@@ -14,6 +14,7 @@ or `.cmds` files are ever written to `/run/mina`.
 | PAM config looks right, manual test works, but `/run/mina` is always empty | [Step 4d](#4d--pam_exec-calls-session-close-during-login-deleting-the-state-file-immediately) — `pam_exec` phase bug |
 | `/run/mina/<ppid>.session` appears but no `.cmds` file | [Step 5](#step-5--is-the-shell-hook-installed-and-active) — shell hook missing or inactive |
 | Files appear in `/run/mina` but no bundle lands at the nest | [Step 6](#step-6--does-etcminatoml-exist-and-parse-correctly) — config or transport problem |
+| HTTPS transport: bundles pile up in `staging_dir` | [Step 6a](#step-6a--https-transport-errors) — TLS or nest problem |
 | Bundles of `ssh host cmd`, scp or sftp have an empty `commands.log` | Not a fault: no login shell, no shell hook. `audit_status` in `session.json` says what is missing: `rules-missing` → `mina install-audit`; `unavailable` → install auditd; `no-session-id` → `pam_loginuid` not in the PAM stack; `not-capturing` → rules not loaded (`auditctl -l \| grep mina`, `augenrules --load`) |
 
 Work through the sections in order — each one rules out a layer of the stack.
@@ -492,6 +493,30 @@ local_destination = "/var/mina"
 text_size_limit_kb = 512
 skip_paths = ["/proc", "/sys", "/dev", "/tmp", "/run"]
 ```
+
+---
+
+## Step 6a — HTTPS transport errors
+
+When shipping fails, the bundle stays in `staging_dir` (default
+`/var/lib/mina/staging/<hostname>/`) as the only copy, and
+`mina session-close` prints the error (see [Step 4a](#4a--check-syslog)
+for where that ends up). Match the message:
+
+| Message contains | Cause | Fix |
+|---|---|---|
+| `must start with https://`, `has no host`, `must be set together` | `[nest]` https keys invalid | Fix `/etc/mina.toml`; checked at every session close, only when `transport = "https"` |
+| `nest.https_client_cert: cannot read …` / `no certificate found` | Cert file missing or not PEM | Check the path; it must hold at least one `BEGIN CERTIFICATE` block |
+| `nest.https_client_key: … no unencrypted private key` | Key missing, encrypted, or not PEM | Mina needs an unencrypted PEM key; decrypt it to a root-only file |
+| `UnknownIssuer` / `invalid peer certificate` | Nest certificate not trusted | Set `https_ca_cert` to the CA that issued the nest's certificate, or install `ca-certificates` |
+| `Expired` | Nest or client certificate expired | Renew it; Mina reads the files again at the next session close |
+| `… and nest.https_client_key … do not match` | Key does not belong to the certificate (e.g. only one of the two was renewed) | Compare `openssl x509 -noout -pubkey -in CERT` with `openssl pkey -pubout -in KEY`; they must be equal |
+| `HTTP 400` (`No required SSL certificate was sent`) / `HTTP 403` | Nest wants a client certificate, or does not trust the one sent | Set `https_client_cert`/`https_client_key`; check the nest trusts the CA that issued it |
+| `HTTP 301` / `302` / `307` / `308` | Wrong `https_endpoint` (often a missing or extra trailing `/`); Mina never follows redirects | Set the URL the nest answers on directly |
+| `Timeout` / `Connection refused` | Nest unreachable on 443 | Network or firewall; the bundle is kept in staging |
+
+To retry by hand, inspect the bundle in staging and copy it to the nest;
+Mina does not resend kept bundles on its own yet.
 
 ---
 

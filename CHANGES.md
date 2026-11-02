@@ -29,6 +29,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **HTTPS transport, with optional mutual TLS** — `transport = "https"`
+  now works: the bundle is sent as one `POST` of a gzip tar to
+  `https_endpoint`. New optional `[nest]` keys: `https_client_cert` and
+  `https_client_key` present a client certificate the machine already
+  has; `https_ca_cert` verifies the nest against that CA instead of the
+  system CA store. The files are read at every session close, so renewed
+  certificates are picked up. Plain `http://` is refused; there is no way
+  to skip verification. Timeouts: 10 s to connect, 60 s per attempt. The
+  tar is byte-identical on a retry and its SHA-256 is sent as
+  `X-Mina-Bundle-Digest`, so a receiver can drop resends. A bad https
+  setting keeps the bundle in staging. The receiver (`mina-nest`) is not
+  written yet; see the README for the wire contract.
 - **Commands of sessions without a login shell, from auditd** (#1) —
   `ssh host cmd`, scp and sftp start no login shell, so the shell hook
   never saw their commands; on one test machine 88 of 89 SSH bundles were

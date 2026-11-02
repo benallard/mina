@@ -6,6 +6,9 @@ resolver = "2"
 name = "mina"
 version = "0.3.0-dev"
 edition = "2021"
+# Debian 13 (trixie) ships rustc 1.85; its package builds with that.
+# Clippy's incompatible_msrv lint then rejects newer std APIs.
+rust-version = "1.85"
 description = "Passive SSH session auditor — watches, records, reports"
 license = "MIT"
 authors = ["Benoît Allard <benoit.allard@gmx.de>"]
@@ -33,6 +36,18 @@ toml     = "0.8"
 chrono   = { version = "0.4", features = ["serde"] }
 tracing-subscriber = "0.3"
 clap     = { version = "4", features = ["derive"] }
+
+# HTTPS transport. rustls + ring, roots from the system store or a configured
+# CA (no webpki-roots: Debian trixie does not package it). Keep within what
+# trixie ships (ureq 3.0.11): Debian builds link against system crates.
+ureq     = { version = "3.0", default-features = false, features = ["rustls", "platform-verifier"] }
+# Same rustls as ureq's (trixie: 0.23.26). Only used to check a client cert
+# and key belong together before handing them to ureq, which panics if not.
+rustls   = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Bundle tarball and its digest (HTTPS transport).
+tar      = "0.4"
+flate2   = "1"
+sha2     = "0.10"
 
 # umask(2) and geteuid(2) for session-close; std has neither. Already in the
 # lock file (pulled in by tempfile), so no new crate to vet.
