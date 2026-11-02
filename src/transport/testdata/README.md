@@ -19,3 +19,4 @@ openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -out client.pem -days 
 cat client.pem ca.pem > chain.pem
 rm ca.key client.csr client.pem
 ```
+- `other.key` — unrelated unencrypted PKCS#8 key (for the key-mismatch test): `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out other.key`

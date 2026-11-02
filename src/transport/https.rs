@@ -17,6 +17,7 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use ureq::tls::{Certificate, ClientCert, PemItem, PrivateKey, RootCerts, TlsConfig, TlsProvider};
 
@@ -42,10 +43,18 @@ pub(crate) struct TlsMaterial {
 /// so a certificate renewed on disk is used by the next session close.
 pub(crate) fn load_tls_material(s: &HttpsSettings) -> Result<TlsMaterial> {
     let client = match (&s.client_cert, &s.client_key) {
-        (Some(cert), Some(key)) => Some((
-            read_certs(cert, "nest.https_client_cert")?,
-            read_key(key, "nest.https_client_key")?,
-        )),
+        (Some(cert), Some(key)) => {
+            let chain = read_certs(cert, "nest.https_client_cert")?;
+            let private_key = read_key(key, "nest.https_client_key")?;
+            check_client_pair(&chain, &private_key).with_context(|| {
+                format!(
+                    "nest.https_client_cert {} and nest.https_client_key {} do not match",
+                    cert.display(),
+                    key.display()
+                )
+            })?;
+            Some((chain, private_key))
+        }
         _ => None,
     };
     let roots = match &s.ca_cert {
@@ -70,6 +79,26 @@ pub(crate) fn tls_config(m: TlsMaterial) -> TlsConfig {
         )
         .root_certs(roots)
         .build()
+}
+
+/// Run the same rustls call ureq makes with a client cert, so a pair rustls
+/// refuses (key does not match the leaf, unsupported key type) is an error
+/// here. ureq itself `expect()`s that call and would panic at connect time.
+fn check_client_pair(chain: &[Certificate<'static>], key: &PrivateKey<'static>) -> Result<()> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let certs = chain
+        .iter()
+        .map(|c| CertificateDer::from(c.der()).into_owned())
+        .collect();
+    // ureq does not export its key-kind enum; the DER tells the kind too.
+    let key_der = PrivateKeyDer::try_from(key.der())
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .clone_key();
+    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_protocol_versions(rustls::DEFAULT_VERSIONS)?
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_client_auth_cert(certs, key_der)?;
+    Ok(())
 }
 
 /// Every certificate in the PEM file at `path`; at least one.
@@ -269,12 +298,27 @@ mod tests {
         assert!(e.contains("no certificate"), "{e}");
     }
 
+    /// ureq panics on a pair rustls refuses; we must return an error first.
+    #[test]
+    fn mismatched_key_is_an_error_not_a_panic() {
+        let f = Fixtures::new();
+        fs::write(f.path("other.key"), include_bytes!("testdata/other.key")).unwrap();
+        let e = err(&f.settings("chain.pem", "other.key", None));
+        assert!(
+            e.contains("https_client_key") && e.contains("do not match"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn reads_files_on_every_call() {
         let f = Fixtures::new();
         let s = f.settings("chain.pem", "client.key", None);
         assert_eq!(load_tls_material(&s).unwrap().client.unwrap().0.len(), 2);
-        fs::write(f.path("chain.pem"), CA).unwrap();
+        // Same key, renewed file now holding the leaf only.
+        let end = b"-----END CERTIFICATE-----";
+        let cut = CHAIN.windows(end.len()).position(|w| w == end).unwrap() + end.len();
+        fs::write(f.path("chain.pem"), &CHAIN[..cut]).unwrap();
         assert_eq!(load_tls_material(&s).unwrap().client.unwrap().0.len(), 1);
     }
 

@@ -38,6 +38,9 @@ clap     = { version = "4", features = ["derive"] }
 # CA (no webpki-roots: Debian trixie does not package it). Keep within what
 # trixie ships (ureq 3.0.11): Debian builds link against system crates.
 ureq     = { version = "3.0", default-features = false, features = ["rustls", "platform-verifier"] }
+# Same rustls as ureq's (trixie: 0.23.26). Only used to check a client cert
+# and key belong together before handing them to ureq, which panics if not.
+rustls   = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # Bundle tarball and its digest (HTTPS transport).
 tar      = "0.4"
 flate2   = "1"
