@@ -18,7 +18,7 @@ pub struct SshTransport {
 
 impl Transport for SshTransport {
     fn ship(&self, bundle_root: &Path) -> Result<()> {
-        // bundle_root is e.g. /tmp/mina-staging/web-prod-03/2025-06-01_14-32-05_alice/
+        // bundle_root is e.g. /var/lib/mina/staging/web-prod-03/2025-06-01_14-32-05_alice/
         // We ship the host-level directory (one level up) so the nest layout is preserved.
         let host_dir = bundle_root.parent().context("bundle_root has no parent")?;
 

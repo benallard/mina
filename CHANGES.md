@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — 0.3.0-dev
 
+### Security
+
+- **Captured files are no longer readable by other local users**
+  ([GHSA-pvch-q4qh-965j](https://github.com/benallard/mina/security/advisories/GHSA-pvch-q4qh-965j)) —
+  `session-close` runs as root and copies text files named in commands,
+  e.g. `/etc/shadow` after `cat /etc/shadow`. Those copies were written
+  world-readable to `/tmp/mina-staging`, never removed from there, and the
+  local transport published them as `0444` under `0755` directories. A
+  local user could also pre-create the predictable staging path in `/tmp`
+  and plant symlinks to make root write bundle files elsewhere.
+  - `session-close` sets umask `077`.
+  - The default `staging_dir` is now `/var/lib/mina/staging`, created
+    `0700`. `session-close` refuses a staging directory that is a
+    symlink, not owned by root, or writable by group or other.
+    **If you set `staging_dir` yourself, check it meets this.**
+  - A bundle is removed from staging once shipped. It is kept, as the only
+    copy, when shipping fails.
+  - The local transport makes bundle files `0400` and directories `0500`.
+  - README and the manual runbook recommend a nest of `0750 root:adm`.
+
 ### Fixed
 
 - **Relative paths are resolved in the user's working directory** (#3) —

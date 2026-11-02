@@ -34,5 +34,10 @@ chrono   = { version = "0.4", features = ["serde"] }
 tracing-subscriber = "0.3"
 clap     = { version = "4", features = ["derive"] }
 
+# umask(2) and geteuid(2) for session-close; std has neither. Already in the
+# lock file (pulled in by tempfile), so no new crate to vet.
+[target.'cfg(unix)'.dependencies]
+libc     = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

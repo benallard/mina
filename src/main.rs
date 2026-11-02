@@ -8,6 +8,7 @@ use mina_lib::command_log::{CommandSource, ShellHookSource};
 use mina_lib::config::{Config, SessionConfig, TransportKind, DEFAULT_CONFIG_PATH};
 use mina_lib::file_capture::{extract_paths, resolve_candidate, snapshot};
 use mina_lib::pam_hook::{service_opens_session, EnvPamSession, SessionState};
+use mina_lib::staging::{prepare_staging_dir, ship_and_remove};
 use mina_lib::transport::https::HttpsTransport;
 use mina_lib::transport::local::LocalTransport;
 use mina_lib::transport::ssh::SshTransport;
@@ -116,6 +117,36 @@ fn session_key() -> Result<u32> {
 #[cfg(not(target_os = "linux"))]
 fn session_key() -> Result<u32> {
     bail!("session_key() is only supported on Linux")
+}
+
+// ── Process credentials ───────────────────────────────────────────────────
+
+/// Set the process umask to `077`, so everything `session-close` writes
+/// (staged bundles, nest directories) is private to root.
+#[cfg(unix)]
+fn restrict_umask() {
+    // SAFETY: umask(2) only replaces the process file mode mask and cannot
+    // fail; no pointers are involved.
+    unsafe {
+        libc::umask(0o077);
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_umask() {}
+
+/// The effective uid of this process: the owner the staging directory
+/// must have.
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    // SAFETY: geteuid(2) takes no arguments, cannot fail and has no side
+    // effects.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(not(unix))]
+fn effective_uid() -> u32 {
+    0
 }
 
 // ── PAM / profile.d markers ───────────────────────────────────────────────
@@ -411,6 +442,10 @@ fn cmd_session_close() -> Result<()> {
         return Ok(());
     }
 
+    // The bundle holds copies of files root could read: never let it be
+    // created readable by anyone else.
+    restrict_umask();
+
     // Same filter as session-open: other services never had a session.
     if !pam_service_allowed() {
         return Ok(());
@@ -515,13 +550,16 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
         })
         .collect();
 
-    // 5. Assemble on-disk bundle
+    // 5. Assemble on-disk bundle, in a staging directory only root can use
+    prepare_staging_dir(&config.staging_dir, effective_uid())
+        .context("unsafe or unusable staging_dir")?;
     let bundle = Bundle::write(&config.staging_dir, state.meta.clone(), commands, captures)
         .context("failed to assemble bundle")?;
 
-    // 6. Build the configured transport and ship (retry once on failure)
+    // 6. Build the configured transport and ship (retry once on failure);
+    //    the staged copy is removed once shipped, kept if shipping failed
     let transport = build_transport(&config)?;
-    ship_with_retry(transport.as_ref(), &bundle.root).context("failed to ship bundle")?;
+    ship_and_remove(transport.as_ref(), &bundle.root)?;
 
     Ok(())
 }
@@ -557,20 +595,6 @@ fn build_transport(config: &Config) -> Result<Box<dyn Transport>> {
             Ok(Box::new(LocalTransport {
                 destination: destination.into(),
             }))
-        }
-    }
-}
-
-/// Ship the bundle, retrying once on transient failure.
-///
-/// AGENTS.md requirement: "Retry at least once on transient failure before
-/// giving up."  A second failure is returned to the caller unchanged.
-fn ship_with_retry(transport: &dyn Transport, bundle_root: &Path) -> Result<()> {
-    match transport.ship(bundle_root) {
-        Ok(()) => Ok(()),
-        Err(first_err) => {
-            eprintln!("mina: ship attempt 1 failed ({first_err:#}), retrying…");
-            transport.ship(bundle_root)
         }
     }
 }

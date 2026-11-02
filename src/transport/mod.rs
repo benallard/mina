@@ -20,6 +20,20 @@ pub trait Transport {
     fn ship(&self, bundle_root: &Path) -> Result<()>;
 }
 
+/// Ship the bundle, retrying once on transient failure.
+///
+/// AGENTS.md requirement: "Retry at least once on transient failure before
+/// giving up."  A second failure is returned to the caller unchanged.
+pub fn ship_with_retry(transport: &dyn Transport, bundle_root: &Path) -> Result<()> {
+    match transport.ship(bundle_root) {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            eprintln!("mina: ship attempt 1 failed ({first_err:#}), retrying…");
+            transport.ship(bundle_root)
+        }
+    }
+}
+
 // ── Fake transport for tests ──────────────────────────────────────────────
 
 #[cfg(test)]
