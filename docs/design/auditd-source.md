@@ -1,6 +1,6 @@
 # Design: auditd command source (#1, step 2)
 
-Status: **approved and implemented** (2026-11-02). Tier 3 not yet run.
+Status: **approved and implemented** (2026-11-02). Tier 3 run on a fresh Debian 13 host (auditd 4.0.2, OpenSSH 10.0); recordings in `tests/fixtures/audit/recorded/`.
 
 ## Problem
 

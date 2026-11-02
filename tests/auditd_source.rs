@@ -237,3 +237,89 @@ fn missing_log_finds_nothing() {
     // No files at all: nothing to read, nothing found.
     assert_eq!(found.status, AuditStatus::NotCapturing);
 }
+
+// ── Recordings from a Debian 13 test host (auditd 4.0.2, OpenSSH 10.0) ──
+//
+// `ausearch --session N --raw`, keeping only SYSCALL, EXECVE, CWD, PATH,
+// PROCTITLE and EOE records (no addresses or host names). ENRICHED format.
+// pam_exec runs mina twice at open and twice at close; pam_motd runs
+// run-parts under the same session id.
+
+fn recorded(ses: u32, session_key: u32, close_pid: u32) -> Scope {
+    Scope {
+        ses,
+        session_key,
+        close_pid,
+        ..scope()
+    }
+}
+
+fn collect_recorded(text: &str, scope: Scope) -> mina_lib::command_log::AuditCommands {
+    let dir = TempDir::new().unwrap();
+    let log = dir.path().join("audit.log");
+    std::fs::write(&log, text).unwrap();
+    let source = AuditdSource {
+        scope,
+        ..source(&log, None, 0)
+    };
+    source.collect().unwrap()
+}
+
+#[test]
+fn recorded_ssh_command() {
+    let found = collect_recorded(
+        include_str!("fixtures/audit/recorded/ssh-cmd.log"),
+        recorded(56, 38424, 38485),
+    );
+    assert_eq!(
+        commands(&found),
+        ["bash -c 'cat /etc/hostname'", "cat /etc/hostname"]
+    );
+    assert!(found.entries.iter().all(|e| e.capture_paths));
+    assert_eq!(found.entries[1].cwd, Some("/root".into()));
+}
+
+#[test]
+fn recorded_scp_upload() {
+    let found = collect_recorded(
+        include_str!("fixtures/audit/recorded/scp.log"),
+        recorded(26, 30103, 30116),
+    );
+    assert_eq!(
+        commands(&found),
+        [
+            "bash -c /usr/lib/openssh/sftp-server",
+            "/usr/lib/openssh/sftp-server"
+        ]
+    );
+}
+
+#[test]
+fn recorded_sudo_and_apt() {
+    let found = collect_recorded(
+        include_str!("fixtures/audit/recorded/sudo-apt.log"),
+        recorded(24, 29408, 29593),
+    );
+    assert_eq!(found.entries.len(), 41);
+    // Only the shell and what it started directly; sudo's use_pty monitor
+    // makes everything under sudo untraceable.
+    let candidates: Vec<&str> = found
+        .entries
+        .iter()
+        .filter(|e| e.capture_paths)
+        .map(|e| e.command.as_str())
+        .collect();
+    assert_eq!(
+        candidates,
+        [
+            "bash -c 'sudo -n cp /etc/hostname /etc/hostname.mina-test; sudo -n apt-get install -y -qq --reinstall nano >/dev/null 2>&1'",
+            "sudo -n cp /etc/hostname /etc/hostname.mina-test",
+            "sudo -n apt-get install -y -qq --reinstall nano",
+        ]
+    );
+    // sudo's own PAM stack runs mina too (PAM_SERVICE=sudo): never a command.
+    assert!(!found
+        .entries
+        .iter()
+        .any(|e| e.command.starts_with("/usr/bin/mina")));
+}

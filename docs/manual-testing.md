@@ -323,12 +323,19 @@ With `Subsystem sftp internal-sftp` in sshd_config, no commands at all.
 `"audit_status": "ok"` and both commands.
 
 **Rules not loaded:** `sudo auditctl -D`, then `ssh <user>@<test-host> true`.
-Expect logout to take about one second longer and
-`"audit_status": "not-capturing"`. Reload with `sudo augenrules --load`.
+Expect `"audit_status": "not-capturing"`. session-close waits up to
+`wait_ms` for records that never come; the client does not notice, since
+sshd lets it go before closing the PAM session. Reload with
+`sudo augenrules --load`.
 
 **auditd stopped:** `sudo systemctl stop auditd`, `ssh <user>@<test-host> true`.
 Expect `"not-capturing"` (the kernel sends records elsewhere while auditd
-is down). Start it again.
+is down). Start it again (`systemctl start auditd` does not reload the
+rules after an `auditctl -D`; run `augenrules --load`).
+
+When checking a bundle right after `ssh … cmd` returns, wait a few
+seconds: sshd runs `session-close` after the client has disconnected.
+
 
 **Removal:**
 

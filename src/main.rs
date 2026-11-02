@@ -465,9 +465,13 @@ fn audit_uninstall() -> Result<bool> {
 }
 
 fn load_audit_rules() -> Result<()> {
+    // augenrules prints auditctl's status block once per load step; only
+    // its errors are of interest.
     let status = std::process::Command::new("augenrules")
         .arg("--load")
+        .stdout(std::process::Stdio::null())
         .status()?;
+
     if !status.success() {
         bail!("augenrules --load failed ({status})");
     }

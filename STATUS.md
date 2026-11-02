@@ -29,7 +29,7 @@ Update it as work lands. Keep it honest — a wrong STATUS.md is worse than none
 | 13 | `install-pam` / `uninstall-pam` | `src/main.rs` | ✅ Done | pam_exec block (idempotent), profile.d copy, tmpfiles.d, config bootstrap |
 | 14 | HTTPS transport | `src/transport/https.rs` | ❌ Stub | `bail!("not yet implemented")` |
 | 15 | Nest ingest server | `src/nest.rs` | ❌ Stub | `println!("not yet implemented")` |
-| 16 | Auditd source | `src/command_log.rs`, `src/command_log/` | ✅ Done | Exec records scoped by audit session id, for sessions without a login shell (#1); `install-audit`/`uninstall-audit`. Design: `docs/design/auditd-source.md`. Tier 3 not yet run on a real host |
+| 16 | Auditd source | `src/command_log.rs`, `src/command_log/` | ✅ Done | Exec records scoped by audit session id, for sessions without a login shell (#1); `install-audit`/`uninstall-audit`. Design: `docs/design/auditd-source.md`. Tier 3 run on Debian 13 (2026-11-02) |
 | 17 | Tier 2 integration tests | `tests/` | 🟡 Partial | `shell_hook.rs`, `auditd_source.rs`; no full-lifecycle test yet (the close pipeline lives in the binary) |
 | 18 | Config validation | `src/config.rs` | ❌ Missing | No TLS enforcement, no cross-field checks |
 
