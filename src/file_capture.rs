@@ -127,9 +127,17 @@ pub enum CaptureOutcome {
 
 #[derive(Debug)]
 pub enum SkipReason {
+    /// Under one of the `skip_prefixes`; not looked at.
+    Excluded,
+    /// Nothing at this path.
     NotFound,
+    /// A directory, device, socket or FIFO: not a regular file.
+    NotAFile,
     Binary,
-    TooLarge { size_kb: u64, limit_kb: u64 },
+    TooLarge {
+        size_kb: u64,
+        limit_kb: u64,
+    },
     ReadError(String),
 }
 
@@ -139,17 +147,20 @@ pub fn snapshot(path: &Path, size_limit_kb: u64, skip_prefixes: &[PathBuf]) -> C
     // Respect skip_paths
     for prefix in skip_prefixes {
         if path.starts_with(prefix) {
-            return CaptureOutcome::Skipped(SkipReason::NotFound);
+            return CaptureOutcome::Skipped(SkipReason::Excluded);
         }
     }
 
     let metadata = match std::fs::metadata(path) {
-        Err(_) => return CaptureOutcome::Skipped(SkipReason::NotFound),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return CaptureOutcome::Skipped(SkipReason::NotFound)
+        }
+        Err(e) => return CaptureOutcome::Skipped(SkipReason::ReadError(e.to_string())),
         Ok(m) => m,
     };
 
     if !metadata.is_file() {
-        return CaptureOutcome::Skipped(SkipReason::NotFound);
+        return CaptureOutcome::Skipped(SkipReason::NotAFile);
     }
 
     let size_kb = metadata.len() / 1024;
@@ -331,7 +342,39 @@ mod tests {
         let skips = vec![dir.path().to_owned()];
         assert!(matches!(
             snapshot(&p, 512, &skips),
-            CaptureOutcome::Skipped(_)
+            CaptureOutcome::Skipped(SkipReason::Excluded)
+        ));
+    }
+
+    #[test]
+    fn excluded_wins_over_missing_and_directory() {
+        let dir = TempDir::new().unwrap();
+        let skips = vec![dir.path().to_owned()];
+        assert!(matches!(
+            snapshot(&dir.path().join("missing"), 512, &skips),
+            CaptureOutcome::Skipped(SkipReason::Excluded)
+        ));
+        assert!(matches!(
+            snapshot(dir.path(), 512, &skips),
+            CaptureOutcome::Skipped(SkipReason::Excluded)
+        ));
+    }
+
+    #[test]
+    fn missing_path_is_not_found() {
+        let dir = TempDir::new().unwrap();
+        assert!(matches!(
+            snapshot(&dir.path().join("missing"), 512, &[]),
+            CaptureOutcome::Skipped(SkipReason::NotFound)
+        ));
+    }
+
+    #[test]
+    fn directory_is_not_a_file() {
+        let dir = TempDir::new().unwrap();
+        assert!(matches!(
+            snapshot(dir.path(), 512, &[]),
+            CaptureOutcome::Skipped(SkipReason::NotAFile)
         ));
     }
 }

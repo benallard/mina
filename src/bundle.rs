@@ -9,7 +9,20 @@
 ///     session.json
 ///     commands.log
 ///     files/{mirrored absolute path}
+///
+/// `commands.log` has one line per command, each ending in a newline:
+///
+///   <timestamp>\t<command>
+///
+/// `<timestamp>` is ISO-8601 in UTC with second precision
+/// (`2026-10-30T14:03:46Z`). A line break inside a command (a here-document
+/// or multi-line loop, from a source that keeps it) is written as the two
+/// characters `\n` (`\r` for a carriage return), so a line is always one
+/// whole command. This is for reading and grepping: backslashes are not
+/// escaped, so such a command cannot be told apart from one that contained
+/// a literal `\n`.
 use anyhow::Result;
+use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -56,11 +69,7 @@ impl Bundle {
         std::fs::create_dir_all(&root)?;
 
         // commands.log
-        let commands_log = commands
-            .iter()
-            .map(|e| format!("{}\t{}", e.timestamp.format("%H:%M:%S"), e.command))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let commands_log: String = commands.iter().map(commands_log_line).collect();
         std::fs::write(root.join("commands.log"), commands_log)?;
 
         // files/
@@ -79,10 +88,12 @@ impl Bundle {
                     files_captured += 1;
                 }
                 CaptureOutcome::Skipped(reason) => {
-                    files_skipped.push(SkippedFile {
-                        path: path.display().to_string(),
-                        reason: describe_skip(&reason),
-                    });
+                    if let Some(reason) = describe_skip(&reason) {
+                        files_skipped.push(SkippedFile {
+                            path: path.display().to_string(),
+                            reason,
+                        });
+                    }
                 }
             }
         }
@@ -119,14 +130,28 @@ fn mirror_path(files_dir: &Path, path: &Path) -> PathBuf {
     files_dir.join(stripped)
 }
 
-fn describe_skip(reason: &SkipReason) -> String {
+/// One `commands.log` line, newline included (see the module docs).
+fn commands_log_line(entry: &CommandEntry) -> String {
+    let command = entry.command.replace('\n', "\\n").replace('\r', "\\r");
+    format!(
+        "{}\t{}\n",
+        entry.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true),
+        command
+    )
+}
+
+/// The `files_skipped` reason for a skip, or `None` if the path is not
+/// listed: excluded paths (`skip_paths`) and directories or other
+/// non-regular files were never meant to be captured.
+fn describe_skip(reason: &SkipReason) -> Option<String> {
     match reason {
-        SkipReason::NotFound => "not found or not a file".into(),
-        SkipReason::Binary => "binary file".into(),
+        SkipReason::Excluded | SkipReason::NotAFile => None,
+        SkipReason::NotFound => Some("not found".into()),
+        SkipReason::Binary => Some("binary file".into()),
         SkipReason::TooLarge { size_kb, limit_kb } => {
-            format!("too large ({size_kb}KB > {limit_kb}KB limit)")
+            Some(format!("too large ({size_kb}KB > {limit_kb}KB limit)"))
         }
-        SkipReason::ReadError(e) => format!("read error: {e}"),
+        SkipReason::ReadError(e) => Some(format!("read error: {e}")),
     }
 }
 
@@ -136,7 +161,7 @@ fn describe_skip(reason: &SkipReason) -> String {
 mod tests {
     use super::*;
     use crate::pam_hook::SessionMeta;
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use tempfile::TempDir;
 
     fn fake_meta() -> SessionMeta {
@@ -204,5 +229,100 @@ mod tests {
         let log = std::fs::read_to_string(bundle.root.join("commands.log")).unwrap();
         assert!(log.contains("cd /etc/nginx"));
         assert!(log.contains("vim nginx.conf"));
+    }
+
+    fn entry_at(rfc3339: &str, command: &str) -> CommandEntry {
+        CommandEntry {
+            timestamp: DateTime::parse_from_rfc3339(rfc3339)
+                .unwrap()
+                .with_timezone(&Utc),
+            cwd: None,
+            command: command.into(),
+        }
+    }
+
+    fn read_log(commands: Vec<CommandEntry>) -> String {
+        let staging = TempDir::new().unwrap();
+        let bundle = Bundle::write(staging.path(), fake_meta(), commands, vec![]).unwrap();
+        std::fs::read_to_string(bundle.root.join("commands.log")).unwrap()
+    }
+
+    #[test]
+    fn commands_log_lines_have_utc_date_and_trailing_newline() {
+        let log = read_log(vec![
+            entry_at("2026-10-30T23:59:58.900Z", "systemctl status"),
+            // Not UTC, and past midnight: written as UTC with its date.
+            entry_at("2026-10-31T01:03:46.250+02:00", "printf 'a\tb'"),
+        ]);
+        assert_eq!(
+            log,
+            "2026-10-30T23:59:58Z\tsystemctl status\n\
+             2026-10-30T23:03:46Z\tprintf 'a\tb'\n"
+        );
+    }
+
+    #[test]
+    fn empty_session_gives_empty_commands_log() {
+        assert_eq!(read_log(vec![]), "");
+    }
+
+    #[test]
+    fn newline_in_command_is_escaped() {
+        let log = read_log(vec![
+            entry_at("2026-10-30T14:03:46Z", "cat > /tmp/x <<EOF\nline a\r\nEOF"),
+            entry_at("2026-10-30T14:03:50Z", "echo last"),
+        ]);
+        assert_eq!(
+            log,
+            "2026-10-30T14:03:46Z\tcat > /tmp/x <<EOF\\nline a\\r\\nEOF\n\
+             2026-10-30T14:03:50Z\techo last\n"
+        );
+        assert_eq!(log.lines().count(), 2);
+    }
+
+    #[test]
+    fn only_real_skips_are_listed() {
+        let staging = TempDir::new().unwrap();
+        let captures = vec![
+            (
+                PathBuf::from("/tmp/mina-staging/"),
+                CaptureOutcome::Skipped(SkipReason::Excluded),
+            ),
+            (
+                PathBuf::from("/etc/nginx"),
+                CaptureOutcome::Skipped(SkipReason::NotAFile),
+            ),
+            (
+                PathBuf::from("/etc/missing.conf"),
+                CaptureOutcome::Skipped(SkipReason::NotFound),
+            ),
+            (
+                PathBuf::from("/var/log/big.log"),
+                CaptureOutcome::Skipped(SkipReason::TooLarge {
+                    size_kb: 600,
+                    limit_kb: 512,
+                }),
+            ),
+            (
+                PathBuf::from("/etc/shadow"),
+                CaptureOutcome::Skipped(SkipReason::ReadError("Permission denied".into())),
+            ),
+        ];
+        let bundle = Bundle::write(staging.path(), fake_meta(), vec![], captures).unwrap();
+        let json = std::fs::read_to_string(bundle.root.join("session.json")).unwrap();
+        let report: SessionReport = serde_json::from_str(&json).unwrap();
+        let listed: Vec<(&str, &str)> = report
+            .files_skipped
+            .iter()
+            .map(|s| (s.path.as_str(), s.reason.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("/etc/missing.conf", "not found"),
+                ("/var/log/big.log", "too large (600KB > 512KB limit)"),
+                ("/etc/shadow", "read error: Permission denied"),
+            ]
+        );
     }
 }
