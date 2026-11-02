@@ -508,10 +508,18 @@ candidates.
 option b). Depth is counted in processes, from the `pid`/`ppid` of the
 SYSCALL records of the window (after the PAM-helper filter, §3):
 
-- The **shell's parent** is the parent of the window's first exec: the
-  process sshd forked for the session, which started the user's shell
-  (`bash -c 'cmd'`, `sh -c sftp-server`). Every shell of the connection
-  (multiplexed channels too) is its child.
+- The **shell's parent** is the process sshd forked for the session,
+  which started the user's shell (`bash -c 'cmd'`, `sh -c sftp-server`).
+  Every shell of the connection (multiplexed channels too) is its child.
+  It never execs itself, so it is found as the parent of the first exec
+  whose parent does not exec in the window. Not simply the first exec's
+  parent: before execing the shell, sshd's session child may run
+  `~/.ssh/rc`, `/etc/ssh/sshrc` or `xauth` (`ssh -X`) through `sh`, as its
+  own child. (Found in review.)
+- **Without the session's start** (no log position from session-open, or
+  that file rotated away; `audit_status: incomplete`), the shell's parent
+  cannot be identified reliably: no entry is a candidate.
+
 - **Depth 0**: execs whose `ppid` is the shell's parent. A shell that runs
   a single command execs it in place (same pid, same parent), so
   `ssh host 'sed -i … /etc/x'` gives `sed` at depth 0.

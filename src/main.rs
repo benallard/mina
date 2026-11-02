@@ -552,6 +552,8 @@ fn audit_commands(
             drop_pam_children: std::env::var("PAM_SERVICE").as_deref() == Ok("sshd"),
             own_exe: own_exe(),
             close_pid: std::process::id(),
+            // ended_at is now: the close marker is from this close phase.
+            close_since: state.meta.ended_at.map_or(0, |t| t.timestamp()) - 2,
             since: state.meta.started_at.timestamp() - 1,
             max_commands: audit.max_commands,
         },

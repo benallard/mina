@@ -58,20 +58,43 @@ pub fn parse_auditd_conf(text: &str) -> AuditdConf {
 
 /// How far the audit log had got at session open. Saved to
 /// `<run_dir>/<session_key>.audit` by `session-open`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogMark {
     pub inode: u64,
     pub offset: u64,
+    /// The file's first bytes. An inode freed by rotation can come back as
+    /// a new audit.log; its content does not.
+    #[serde(default)]
+    pub head: Vec<u8>,
 }
+
+/// How many leading bytes identify a log file: its first record's type and
+/// `msg=audit(<time>:<serial>)`, unique per boot.
+const HEAD_LEN: usize = 64;
 
 impl LogMark {
     /// The current end of `log_file`.
     pub fn now(log_file: &Path) -> std::io::Result<Self> {
-        let meta = std::fs::metadata(log_file)?;
+        let mut file = std::fs::File::open(log_file)?;
+        let meta = file.metadata()?;
         Ok(Self {
             inode: inode(&meta),
             offset: meta.len(),
+            head: read_head(&mut file)?,
         })
+    }
+
+    /// Whether `file` is the file this mark was taken from.
+    fn is(&self, file: &Path) -> bool {
+        let Ok(mut f) = std::fs::File::open(file) else {
+            return false;
+        };
+        let Ok(meta) = f.metadata() else {
+            return false;
+        };
+        inode(&meta) == self.inode
+            && meta.len() >= self.offset
+            && read_head(&mut f).is_ok_and(|head| head.starts_with(&self.head))
     }
 
     pub fn path(run_dir: &Path, session_key: u32) -> PathBuf {
@@ -122,15 +145,9 @@ pub fn log_files(log_file: &Path) -> Vec<PathBuf> {
 /// The log text written since `mark`, across rotations. The flag is `true`
 /// when the start was found; without a mark, or when the marked file has
 /// been rotated away, everything still there is returned with `false`.
-pub fn read_since(log_file: &Path, mark: Option<LogMark>) -> std::io::Result<(String, bool)> {
+pub fn read_since(log_file: &Path, mark: Option<&LogMark>) -> std::io::Result<(String, bool)> {
     let files = log_files(log_file);
-    let start = match mark {
-        Some(m) => files
-            .iter()
-            .position(|f| std::fs::metadata(f).is_ok_and(|meta| inode(&meta) == m.inode))
-            .map(|i| (i, m.offset)),
-        None => None,
-    };
+    let start = mark.and_then(|m| files.iter().position(|f| m.is(f)).map(|i| (i, m.offset)));
     let (first, offset) = start.unwrap_or((0, 0));
     let mut bytes = Vec::new();
     for (i, file) in files.iter().enumerate().skip(first) {
@@ -144,6 +161,12 @@ pub fn read_since(log_file: &Path, mark: Option<LogMark>) -> std::io::Result<(St
         String::from_utf8_lossy(&bytes).into_owned(),
         start.is_some(),
     ))
+}
+
+fn read_head(file: &mut std::fs::File) -> std::io::Result<Vec<u8>> {
+    let mut head = Vec::with_capacity(HEAD_LEN);
+    file.take(HEAD_LEN as u64).read_to_end(&mut head)?;
+    Ok(head)
 }
 
 // ── Rules ─────────────────────────────────────────────────────────────────
@@ -206,6 +229,29 @@ mod tests {
             let r = rules_for_machine(m);
             assert!(!r.contains("arch=b64") && r.contains("arch=b32"), "{m}");
         }
+    }
+
+    #[test]
+    fn mark_matches_only_its_own_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log = dir.path().join("audit.log");
+        std::fs::write(&log, "type=DAEMON_START msg=audit(1.000:1): first file\n").unwrap();
+        let mark = LogMark::now(&log).unwrap();
+        assert!(mark.is(&log));
+
+        // Same inode, other content: what a reused inode looks like.
+        std::fs::write(
+            &log,
+            "type=DAEMON_START msg=audit(2.000:1): second file, longer\n",
+        )
+        .unwrap();
+        assert!(!mark.is(&log));
+        let (_, start_found) = read_since(&log, Some(&mark)).unwrap();
+        assert!(!start_found);
+
+        // Shorter than the offset: not the marked file either.
+        std::fs::write(&log, "type").unwrap();
+        assert!(!mark.is(&log));
     }
 
     #[test]

@@ -25,9 +25,19 @@ fn scope() -> Scope {
         drop_pam_children: true,
         own_exe: b"/usr/bin/mina".to_vec(),
         close_pid: 4999,
+        close_since: 0,
         since: 0,
         max_commands: 10_000,
     }
+}
+
+/// Write `text` as a new audit log, with the mark taken before it.
+fn marked_log(dir: &TempDir, text: &str) -> (std::path::PathBuf, LogMark) {
+    let log = dir.path().join("audit.log");
+    std::fs::write(&log, "").unwrap();
+    let mark = LogMark::now(&log).unwrap();
+    std::fs::write(&log, text).unwrap();
+    (log, mark)
 }
 
 fn source(log: &Path, mark: Option<LogMark>, wait_ms: u64) -> AuditdSource {
@@ -73,6 +83,12 @@ fn ssh_command_session() {
         commands(&found),
         ["bash -c 'cat /etc/hostname'", "cat /etc/hostname"]
     );
+    // Without the session's start, the shell cannot be identified.
+    assert!(found.entries.iter().all(|e| !e.capture_paths));
+
+    let (log, mark) = marked_log(&dir, SSH_CMD);
+    let found = source(&log, Some(mark), 0).collect().unwrap();
+    assert_eq!(found.status, AuditStatus::Ok);
     assert!(found.entries.iter().all(|e| e.capture_paths));
 }
 
@@ -111,9 +127,8 @@ fn sftp_session_and_pam_helpers() {
 #[test]
 fn sudo_and_maintainer_scripts() {
     let dir = TempDir::new().unwrap();
-    let log = dir.path().join("audit.log");
-    std::fs::write(&log, SUDO).unwrap();
-    let found = source(&log, None, 0).collect().unwrap();
+    let (log, mark) = marked_log(&dir, SUDO);
+    let found = source(&log, Some(mark), 0).collect().unwrap();
     let flags: Vec<(&str, bool)> = found
         .entries
         .iter()
@@ -170,7 +185,7 @@ fn marked_file_rotated_away_is_incomplete() {
     std::fs::rename(&log, dir.path().join("gone")).unwrap();
     std::fs::write(&log, SSH_CMD).unwrap();
 
-    let (_, start_found) = read_since(&log, Some(mark)).unwrap();
+    let (_, start_found) = read_since(&log, Some(&mark)).unwrap();
     // Unix: a new file has a new inode. Elsewhere the test is moot.
     if cfg!(unix) {
         assert!(!start_found);
@@ -256,11 +271,10 @@ fn recorded(ses: u32, session_key: u32, close_pid: u32) -> Scope {
 
 fn collect_recorded(text: &str, scope: Scope) -> mina_lib::command_log::AuditCommands {
     let dir = TempDir::new().unwrap();
-    let log = dir.path().join("audit.log");
-    std::fs::write(&log, text).unwrap();
+    let (log, mark) = marked_log(&dir, text);
     let source = AuditdSource {
         scope,
-        ..source(&log, None, 0)
+        ..source(&log, Some(mark), 0)
     };
     source.collect().unwrap()
 }

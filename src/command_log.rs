@@ -230,16 +230,25 @@ impl AuditdSource {
     pub fn collect(&self) -> Result<AuditCommands> {
         let deadline = Instant::now() + self.wait;
         loop {
-            let (text, start_found) = audit_files::read_since(&self.log_file, self.mark)?;
-            let selected = auditd::select(&auditd::parse_events(&text), &self.scope);
+            let (text, start_found) = audit_files::read_since(&self.log_file, self.mark.as_ref())?;
+            let events = auditd::parse_session_events(&text, self.scope.ses);
+            let mut selected = auditd::select(&events, &self.scope);
             if selected.closed || Instant::now() >= deadline {
                 let status = match (selected.closed, selected.any) {
                     (true, _) if start_found => AuditStatus::Ok,
                     (_, true) | (true, false) => AuditStatus::Incomplete,
                     (false, false) => AuditStatus::NotCapturing,
                 };
+                if !start_found {
+                    // Without the session's first exec, the shell cannot be
+                    // told apart from a process deeper down: no candidates.
+                    for entry in &mut selected.entries {
+                        entry.capture_paths = false;
+                    }
+                }
                 return Ok(AuditCommands {
                     entries: selected.entries,
+
                     status,
                     truncated: selected.truncated,
                 });

@@ -53,6 +53,9 @@ pub struct Scope {
     pub own_exe: Vec<u8>,
     /// PID of the running `mina session-close`: its exec ends the window.
     pub close_pid: u32,
+    /// The close marker is not older than this (Unix seconds). The open
+    /// phase also runs `mina session-close`, whose pid could come back.
+    pub close_since: i64,
     /// Events before this (Unix seconds) are from an earlier boot or
     /// session that happened to have the same id.
     pub since: i64,
@@ -274,22 +277,28 @@ fn contiguous(chunks: &BTreeMap<usize, Vec<u8>>) -> Option<Vec<u8>> {
 ///
 /// Each entry is marked as a file-capture candidate only if it is at depth
 /// 0 or 1 below the session's shell: depth 0 for an exec whose parent is
-/// the process that started the session's first command (sshd's session
-/// process), depth n+1 for an exec whose parent ran at depth n. An exec
-/// whose parent never exec'd (a forked subshell, sudo's pty monitor) cannot
-/// be traced and is no candidate either.
+/// the process sshd forked for the session, depth n+1 for an exec whose
+/// parent ran at depth n. An exec whose parent never exec'd (a forked
+/// subshell, sudo's pty monitor) cannot be traced and is no candidate
+/// either.
+///
+/// sshd's session process is the parent of the first exec whose parent
+/// never execs itself. Not simply the first exec's parent: before it execs
+/// the shell, sshd's session child may run `~/.ssh/rc`, `/etc/ssh/sshrc`
+/// or `xauth` (X11 forwarding) through `sh`, as its own child.
 pub fn select(events: &[ExecEvent], scope: &Scope) -> Selected {
     let mut out = Selected::default();
     let mut pam_children: HashSet<u32> = HashSet::new();
-    let mut depth: HashMap<u32, u32> = HashMap::new();
-    let mut shell_parent: Option<u32> = None;
+    let mut window: Vec<&ExecEvent> = Vec::new();
 
     for event in events {
         if event.ses != Some(scope.ses) || event.stamp.0 < scope.since {
             continue;
         }
         let is_mina = event.exe.as_deref() == Some(scope.own_exe.as_slice());
-        if is_mina && event.pid == scope.close_pid {
+        // The open phase runs `mina session-close` too: only an exec from
+        // the close phase can be this process (guards against pid reuse).
+        if is_mina && event.pid == scope.close_pid && event.stamp.0 >= scope.close_since {
             out.closed = true;
             break;
         }
@@ -302,10 +311,19 @@ pub fn select(events: &[ExecEvent], scope: &Scope) -> Selected {
         if is_mina {
             continue;
         }
-        out.any = true;
+        window.push(event);
+    }
+    out.any = !window.is_empty();
 
-        let parent = *shell_parent.get_or_insert(event.ppid);
-        let level = if event.ppid == parent {
+    let exec_pids: HashSet<u32> = window.iter().map(|e| e.pid).collect();
+    let shell_parent = window
+        .iter()
+        .map(|e| e.ppid)
+        .find(|ppid| !exec_pids.contains(ppid));
+    let mut depth: HashMap<u32, u32> = HashMap::new();
+
+    for event in window {
+        let level = if Some(event.ppid) == shell_parent {
             Some(0)
         } else {
             depth.get(&event.ppid).map(|d| d + 1)
@@ -323,6 +341,30 @@ pub fn select(events: &[ExecEvent], scope: &Scope) -> Selected {
             .push(entry(event, level.is_some_and(|d| d <= 1)));
     }
     out
+}
+
+/// `parse_events`, limited to the exec events of audit session `ses`.
+/// Records of other events are skipped before they are parsed, so a whole
+/// busy log stays cheap to read.
+pub fn parse_session_events(text: &str, ses: u32) -> Vec<ExecEvent> {
+    let ses_field = format!(" ses={ses} ");
+    let wanted: HashSet<&str> = text
+        .lines()
+        .filter(|l| l.contains("type=SYSCALL ") && l.contains(&ses_field))
+        .filter_map(stamp_text)
+        .collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| stamp_text(l).is_some_and(|s| wanted.contains(s)))
+        .collect();
+    parse_events(&lines.join("\n"))
+}
+
+/// The `<sec>.<ms>:<serial>` of a record line, unparsed.
+fn stamp_text(line: &str) -> Option<&str> {
+    let start = line.find("msg=audit(")? + "msg=audit(".len();
+    let len = line[start..].find(')')?;
+    Some(&line[start..start + len])
 }
 
 fn entry(event: &ExecEvent, near_shell: bool) -> CommandEntry {
@@ -416,6 +458,7 @@ mod tests {
             drop_pam_children: true,
             own_exe: b"/usr/bin/mina".to_vec(),
             close_pid: 999,
+            close_since: 0,
             since: 0,
             max_commands: 10_000,
         }
@@ -678,6 +721,50 @@ type=PATH msg=audit(1.000:6): item=0 name=\"/etc/x\"
         let sel = select(&parse_events(&text), &scope());
         let flags: Vec<bool> = sel.entries.iter().map(|e| e.capture_paths).collect();
         assert_eq!(flags, [true, true, true, true, false, false]);
+    }
+
+    #[test]
+    fn rc_file_before_the_shell_does_not_shift_depth() {
+        // ssh -X / ~/.ssh/rc: sshd's session child (160, forked from 150)
+        // runs `sh -c xauth …` before it execs the shell itself.
+        let text = exec(1, 161, 160, 12, "/bin/dash", &["sh", "-c", "xauth add"])
+            + &exec(2, 162, 161, 12, "/usr/bin/xauth", &["xauth", "add"])
+            + &exec(3, 160, 150, 12, "/bin/bash", &["bash", "-c", "./deploy.sh"])
+            + &exec(4, 160, 150, 12, "/root/deploy.sh", &["./deploy.sh"])
+            + &exec(5, 201, 160, 12, "/usr/bin/cp", &["cp", "a", "/etc/x"])
+            + &exec(6, 202, 160, 12, "/root/helper.sh", &["./helper.sh"])
+            + &exec(7, 203, 202, 12, "/usr/bin/cat", &["cat", "/etc/key"]);
+        let sel = select(&parse_events(&text), &scope());
+        let flags: Vec<bool> = sel.entries.iter().map(|e| e.capture_paths).collect();
+        // xauth's sh ran before 160 exec'd: no depth. The shell and its
+        // in-place exec: 0. cp, helper.sh: 1. helper's cat: 2.
+        assert_eq!(flags, [false, false, true, true, true, true, false]);
+    }
+
+    #[test]
+    fn open_phase_session_close_is_not_the_close_marker() {
+        // pam_exec runs `mina session-close` at open too; its pid (999)
+        // came back for the real close, much later.
+        let text = exec(1, 999, 100, 12, "/usr/bin/mina", &["mina", "session-close"])
+            + &exec(2, 201, 150, 12, "/bin/ls", &["ls"]);
+        let s = Scope {
+            close_since: 1730550001,
+            ..scope()
+        };
+        let sel = select(&parse_events(&text), &s);
+        assert!(!sel.closed);
+        assert_eq!(commands(&sel), ["ls"]);
+    }
+
+    #[test]
+    fn session_events_only() {
+        let text = exec(1, 200, 150, 13, "/usr/bin/cat", &["cat", "/etc/a"])
+            + &exec(2, 201, 150, 12, "/usr/bin/cat", &["cat", "/etc/b"])
+            + &exec(3, 202, 150, 120, "/usr/bin/cat", &["cat", "/etc/c"]);
+        let events = parse_session_events(&text, 12);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].pid, 201);
+        assert_eq!(events, parse_events(&text)[1..2]);
     }
 
     #[test]
