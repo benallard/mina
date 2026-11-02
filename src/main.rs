@@ -1,12 +1,20 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use mina_lib::bundle::Bundle;
-use mina_lib::command_log::{CommandSource, ShellHookSource};
-use mina_lib::config::{Config, SessionConfig, TransportKind, DEFAULT_CONFIG_PATH};
-use mina_lib::file_capture::{extract_paths, resolve_candidate, snapshot};
+use mina_lib::command_log::audit_files::{
+    parse_auditd_conf, rules_for_machine, LogMark, AUDITD_CONF, RULES_DIR, RULES_FILE, RULES_KEY,
+};
+use mina_lib::command_log::auditd::Scope;
+use mina_lib::command_log::{
+    choose_source, remove_log_mark, AuditStatus, AuditdSource, CommandEntry, CommandOrigin,
+    CommandSource, ShellHookSource, SourceKind,
+};
+use mina_lib::config::{AuditConfig, Config, SessionConfig, TransportKind, DEFAULT_CONFIG_PATH};
+use mina_lib::file_capture::{extract_paths, extract_paths_for_audit, resolve_candidate, snapshot};
 use mina_lib::pam_hook::{service_opens_session, EnvPamSession, SessionState};
 use mina_lib::staging::{prepare_staging_dir, ship_and_remove};
 use mina_lib::transport::https::HttpsTransport;
@@ -46,11 +54,19 @@ enum Command {
     /// Reverses every change made by install-pam. Safe to run multiple times.
     UninstallPam,
 
-    /// Install auditd rules for command capture (alternative to shell hook).
+    /// Install the audit rules that record the commands of sessions
+    /// without a login shell (ssh host cmd, scp, sftp).
     ///
-    /// Adds an auditd rule that records execve calls and configures
-    /// pam_tty_audit. Use when the shell hook is not reliable enough.
+    /// Writes /etc/audit/rules.d/50-mina.rules for this kernel's
+    /// architecture and loads it with augenrules. The rules record every
+    /// program run by a logged-in user. If they fail to load, they are
+    /// removed again. Needs auditd.
     InstallAudit,
+
+    /// Remove the audit rules installed by install-audit.
+    ///
+    /// Safe to run multiple times.
+    UninstallAudit,
 
     /// Record session open. Called by PAM via pam_exec at login.
     ///
@@ -76,6 +92,7 @@ fn main() -> Result<()> {
         Command::InstallPam => cmd_install_pam(),
         Command::UninstallPam => cmd_uninstall_pam(),
         Command::InstallAudit => cmd_install_audit(),
+        Command::UninstallAudit => cmd_uninstall_audit(),
         Command::SessionOpen => cmd_session_open(),
         Command::SessionClose => cmd_session_close(),
     }
@@ -213,6 +230,13 @@ fn cmd_install_pam() -> Result<()> {
     println!("  -- or --");
     println!("  mkdir -p /run/mina && chmod 1777 /run/mina");
 
+    if !Path::new(RULES_FILE).exists() {
+        println!("\nSessions without a login shell (ssh host cmd, scp, sftp) record");
+        println!("commands only from the audit log. To enable that:");
+        println!("  apt install auditd    # if not installed");
+        println!("  mina install-audit");
+    }
+
     Ok(())
 }
 
@@ -239,6 +263,13 @@ fn cmd_uninstall_pam() -> Result<()> {
         Ok(()) => removed.push(TMPFILES_DEST),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => skipped.push(TMPFILES_DEST),
         Err(e) => eprintln!("  warn  could not remove {TMPFILES_DEST}: {e}"),
+    }
+
+    // 4. /etc/audit/rules.d/50-mina.rules
+    match audit_uninstall() {
+        Ok(true) => removed.push(RULES_FILE),
+        Ok(false) => skipped.push(RULES_FILE),
+        Err(e) => eprintln!("  warn  could not remove {RULES_FILE}: {e:#}"),
     }
 
     // /etc/mina.toml and /var/mina are deliberately left in place — data is precious.
@@ -364,12 +395,190 @@ fn install_profile_d() -> Result<()> {
     Ok(())
 }
 
+// ── Audit rules ───────────────────────────────────────────────────────────
+
 fn cmd_install_audit() -> Result<()> {
-    // TODO (Step 11 / AuditdSource):
-    //   1. Write an auditd rule: -a always,exit -F arch=b64 -S execve
-    //   2. Configure pam_tty_audit in /etc/pam.d/sshd
-    //   3. Reload auditd rules
-    bail!("install-audit: not yet implemented (see STATUS.md Step 11)")
+    if !Path::new(RULES_DIR).is_dir() {
+        bail!("{RULES_DIR} does not exist: install auditd first (apt install auditd)");
+    }
+    let uname = tool_output("uname", &["-m"]).context("could not run uname -m")?;
+    let machine = uname.trim();
+    std::fs::write(RULES_FILE, rules_for_machine(machine))
+        .with_context(|| format!("could not write {RULES_FILE}"))?;
+    println!("  wrote {RULES_FILE} (for {machine})");
+
+    match load_audit_rules() {
+        Err(e) if is_not_found(&e) => {
+            println!("\naugenrules not found: load the rules with `augenrules --load`");
+            println!("or by restarting auditd.");
+            return Ok(());
+        }
+        Err(e) => return Err(roll_back_rules(e)),
+        Ok(()) => {}
+    }
+    let loaded = tool_output("auditctl", &["-l"]).context("could not run auditctl -l")?;
+    if !loaded.contains(RULES_KEY) {
+        return Err(roll_back_rules(anyhow::anyhow!(
+            "auditctl -l does not list the mina rules after loading"
+        )));
+    }
+
+    println!("\nmina install-audit: done. The kernel now records every program");
+    println!("run by a logged-in user; mina reads those of its sessions at close.");
+    Ok(())
+}
+
+/// Remove mina's rules again after they failed to load, and reload, so the
+/// admin's other rules end up as before.
+fn roll_back_rules(error: anyhow::Error) -> anyhow::Error {
+    if let Err(e) = std::fs::remove_file(RULES_FILE) {
+        eprintln!("  warn  could not remove {RULES_FILE}: {e}");
+    } else if let Err(e) = load_audit_rules() {
+        eprintln!("  warn  could not reload the audit rules: {e:#}");
+    }
+    error.context(format!(
+        "the mina audit rules did not load; {RULES_FILE} was removed again"
+    ))
+}
+
+fn cmd_uninstall_audit() -> Result<()> {
+    if audit_uninstall()? {
+        println!("  removed {RULES_FILE}");
+    } else {
+        println!("  skip    {RULES_FILE} (not found — already uninstalled?)");
+    }
+    Ok(())
+}
+
+/// Remove mina's rules file and reload the rules. `Ok(false)` if it was
+/// not installed.
+fn audit_uninstall() -> Result<bool> {
+    match std::fs::remove_file(RULES_FILE) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("could not remove {RULES_FILE}")),
+    }
+    if let Err(e) = load_audit_rules() {
+        eprintln!("  warn  could not reload the audit rules ({e:#}); run `augenrules --load`");
+    }
+    Ok(true)
+}
+
+fn load_audit_rules() -> Result<()> {
+    // augenrules prints auditctl's status block once per load step; only
+    // its errors are of interest.
+    let status = std::process::Command::new("augenrules")
+        .arg("--load")
+        .stdout(std::process::Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        bail!("augenrules --load failed ({status})");
+    }
+    Ok(())
+}
+
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Run a tool and return its standard output.
+fn tool_output(program: &str, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new(program).args(args).output()?;
+    if !output.status.success() {
+        bail!("{program} failed ({})", output.status);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The audit log to read: `[audit] log_file`, else auditd.conf's. `None`
+/// when auditd is not configured or writes no local log.
+fn audit_log_file(audit: &AuditConfig) -> Option<PathBuf> {
+    if let Some(file) = &audit.log_file {
+        return Some(file.clone());
+    }
+    let conf = parse_auditd_conf(&std::fs::read_to_string(AUDITD_CONF).ok()?);
+    conf.write_logs.then_some(conf.log_file)
+}
+
+/// Record how far the audit log had got, so session-close reads only what
+/// the session added. Never fails the login.
+fn record_audit_mark(run_dir: &Path, key: u32) {
+    let audit = AuditConfig::load(Path::new(DEFAULT_CONFIG_PATH)).unwrap_or_default();
+    let Some(log_file) = audit_log_file(&audit) else {
+        return;
+    };
+    match LogMark::now(&log_file) {
+        Ok(mark) => {
+            if let Err(e) = mark.save(run_dir, key) {
+                eprintln!("mina: session-open could not save the audit log position: {e}");
+            }
+        }
+        // No log (yet): session-close reports why.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!(
+            "mina: session-open could not read {}: {e}",
+            log_file.display()
+        ),
+    }
+}
+
+/// The session's commands from the audit log, with the reason when there
+/// are none. See docs/design/auditd-source.md, §6.
+fn audit_commands(
+    state: &SessionState,
+    run_dir: &Path,
+    key: u32,
+    audit: &AuditConfig,
+) -> (Vec<CommandEntry>, AuditStatus, bool) {
+    let Some(ses) = state.meta.audit_session else {
+        return (vec![], AuditStatus::NoSessionId, false);
+    };
+    let Some(log_file) = audit_log_file(audit).filter(|f| f.is_file()) else {
+        return (vec![], AuditStatus::Unavailable, false);
+    };
+    if !Path::new(RULES_FILE).is_file() {
+        return (vec![], AuditStatus::RulesMissing, false);
+    }
+    let source = AuditdSource {
+        log_file,
+        mark: LogMark::load(run_dir, key),
+        scope: Scope {
+            ses,
+            session_key: key,
+            // sshd runs the shell from a separate process; login does not
+            // (see the design, §1).
+            drop_pam_children: std::env::var("PAM_SERVICE").as_deref() == Ok("sshd"),
+            own_exe: own_exe(),
+            close_pid: std::process::id(),
+            // ended_at is now: the close marker is from this close phase.
+            close_since: state.meta.ended_at.map_or(0, |t| t.timestamp()) - 2,
+            since: state.meta.started_at.timestamp() - 1,
+            max_commands: audit.max_commands,
+        },
+        wait: Duration::from_millis(audit.wait_ms),
+    };
+    match source.collect() {
+        Ok(found) => (found.entries, found.status, found.truncated),
+        Err(e) => {
+            eprintln!("mina: could not read the audit log: {e:#}");
+            (vec![], AuditStatus::Error, false)
+        }
+    }
+}
+
+/// The path of the running mina binary, as audit records name it.
+fn own_exe() -> Vec<u8> {
+    let path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/bin/mina"));
+    #[cfg(unix)]
+    {
+        std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_string_lossy().into_owned().into_bytes()
+    }
 }
 
 /// Whether the PAM service that called us (`PAM_SERVICE`) is one that opens
@@ -425,6 +634,9 @@ fn cmd_session_open() -> Result<()> {
     if let Err(e) = state.save(run_dir) {
         // Log the error but never propagate — never block login.
         eprintln!("mina: session-open failed to save state: {e}");
+    }
+    if state.meta.audit_session.is_some() {
+        record_audit_mark(run_dir, key);
     }
 
     Ok(())
@@ -485,6 +697,9 @@ fn cmd_session_close() -> Result<()> {
             eprintln!("mina: failed to remove command log: {e}");
         }
     }
+    if let Err(e) = remove_log_mark(run_dir, key) {
+        eprintln!("mina: failed to remove audit log position: {e}");
+    }
 
     Ok(())
 }
@@ -498,23 +713,49 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
     let config =
         Config::load(Path::new(DEFAULT_CONFIG_PATH)).context("failed to load /etc/mina.toml")?;
 
-    // 2. Read commands recorded by the shell hook
-    let source = ShellHookSource {
+    // 2. Read the commands: from the shell hook if a login shell loaded it,
+    //    otherwise from the audit log (ssh host cmd, scp, sftp)
+    let hook = ShellHookSource {
         log_dir: run_dir.to_owned(),
     };
-    let commands = source
-        .commands_for_session(key)
-        .context("failed to read command log")?;
-    let shell_hook = source.hook_attached(key);
+    let shell_hook = hook.hook_attached(key);
+    let (commands, origin) = if shell_hook {
+        let commands = hook
+            .commands_for_session(key)
+            .context("failed to read command log")?;
+        let origin = CommandOrigin {
+            shell_hook,
+            command_source: SourceKind::ShellHook,
+            ..CommandOrigin::default()
+        };
+        (commands, origin)
+    } else {
+        let (commands, status, truncated) = audit_commands(state, run_dir, key, &config.audit);
+        let origin = CommandOrigin {
+            shell_hook,
+            command_source: choose_source(shell_hook, Some(status)),
+            audit_status: Some(status),
+            commands_truncated: truncated,
+        };
+        (commands, origin)
+    };
 
     // 3. Extract candidate file paths, resolve relative ones against the
     //    directory the command ran in (dropped when unknown), deduplicated,
-    //    first-seen order
+    //    first-seen order. From the audit log, only the session's own
+    //    commands (`capture_paths`) of a few listed programs count.
+    let from_audit = origin.command_source == SourceKind::Auditd;
     let mut seen = HashSet::new();
     let candidate_paths: Vec<_> = commands
         .iter()
+        .filter(|e| e.capture_paths)
         .flat_map(|e| {
-            extract_paths(&e.command)
+            let paths = if from_audit {
+                extract_paths_for_audit(&e.command)
+            } else {
+                extract_paths(&e.command)
+            };
+            paths
                 .into_iter()
                 .filter_map(|p| resolve_candidate(&p, e.cwd.as_deref()))
         })
@@ -557,7 +798,7 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
     let bundle = Bundle::write(
         &config.staging_dir,
         state.meta.clone(),
-        shell_hook,
+        origin,
         commands,
         captures,
     )

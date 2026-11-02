@@ -26,7 +26,8 @@ PAM session open hook
    │  records: user, source IP, timestamp, hostname
    ▼
 Shell hook (PROMPT_COMMAND / trap DEBUG)
-   │  or auditd / pam_tty_audit if available
+   │  or, without a login shell (ssh host cmd, scp, sftp),
+   │  the exec records of auditd
    │  records: every command, timestamped
    ▼
 PAM session close hook
@@ -57,20 +58,34 @@ Nest  (central collector)
   "user": "alice",
   "source_ip": "10.0.1.42",
   "tty": "ssh",
+  "audit_session": 412,
   "started_at": "2025-06-01T14:32:05Z",
   "ended_at": "2025-06-01T14:47:22Z",
   "duration_seconds": 917,
   "shell_hook": true,
+  "command_source": "shell-hook",
+  "audit_status": null,
+  "commands_truncated": false,
   "files_captured": 2,
   "commands_recorded": 34
 }
 ```
 
-`shell_hook` says whether a login shell loaded mina's shell hook, so that
-commands could be recorded. `ssh host cmd`, scp and sftp start no login
-shell: their bundles have `"shell_hook": false` and an empty
-`commands.log` by design, not because recording failed. Commands of such
-sessions are not recorded until the auditd command source exists.
+`command_source` says where the commands came from:
+
+- `shell-hook` — a login shell loaded mina's shell hook (`shell_hook:
+  true`): the commands as typed.
+- `auditd` — no login shell (`ssh host cmd`, scp, sftp): the programs the
+  session ran, from auditd's exec records, scoped by the login's audit
+  session id (`audit_session`). Needs auditd and `mina install-audit`.
+- `none` — neither recorded anything. `audit_status` says why:
+  `rules-missing` (run `mina install-audit`), `unavailable` (no auditd),
+  `no-session-id` (no `pam_loginuid`), `not-capturing` (rules not loaded),
+  or `error`. `ok` and `incomplete` go with `auditd`; `incomplete` means
+  the start or the end of the session may be missing.
+
+`commands_truncated` is set when more than `[audit] max_commands` came
+from the audit log.
 
 `tty` is `PAM_TTY` at session open, or `null` when unset. A console login
 gives the terminal (`tty1`); sshd on Linux always gives `ssh`, with or
@@ -95,7 +110,8 @@ inside a command is written as `\n`.
 
 **On monitored machines:**
 - Linux with PAM (systemd-based distros: Debian, Ubuntu, RHEL, Rocky, Arch…)
-- `auditd` — optional but recommended for more complete command capture
+- `auditd` — optional; needed to record the commands of sessions without
+  a login shell (`ssh host cmd`, scp, sftp)
 - Mina agent binary (single static Rust binary, no runtime dependencies)
 - HTTPS transport only: the system CA store (`/etc/ssl/certs`, from
   `ca-certificates`), unless `https_ca_cert` points at the nest's CA
@@ -151,13 +167,27 @@ Only the PAM services listed in `[session] pam_services` open a session
 shared by all services such as Debian's `common-session`. Commands typed in
 a `su -` or `sudo -i` shell go into the login session they were started from.
 
-### 4. (Optional) Enable auditd for deeper command capture
+### 4. (Optional) Record sessions without a login shell
 
 ```bash
+apt install auditd
 mina install-audit
-# Adds pam_tty_audit rule and configures mina to harvest from auditd
-# Falls back to shell hook if auditd is not available
+# Writes /etc/audit/rules.d/50-mina.rules and loads it.
+# Reversible: mina uninstall-audit (uninstall-pam does it too)
 ```
+
+`ssh host cmd`, scp and sftp start no login shell, so the shell hook never
+sees their commands. With these rules, the kernel records every program a
+logged-in user runs; at session close mina reads those of its session
+from auditd's log. Interactive sessions keep using the shell hook. Files
+are captured from these commands only for the session's own commands
+(not what package scripts run) and only for editors and `cp`, `mv`,
+`cat`, `tee`, `sed`, `awk`, `install`, `chmod`, `chown`.
+
+The rules apply to every login on the host, cron jobs included. To leave
+out a busy account (a CI runner logging in over SSH), add a rule before
+mina's, e.g. in `/etc/audit/rules.d/40-mina-local.rules`:
+`-a never,exit -F auid=<uid> -S execve,execveat`.
 
 ### 5. Set up the nest
 
@@ -273,7 +303,7 @@ the receiver's policy.
   The `command=` prefix means SSH will only ever execute that exact rsync invocation, regardless of what the connecting agent requests. The restriction flags (`no-port-forwarding` etc.) close any remaining escape hatches. With this in place, a compromised agent key can push new bundles but cannot read existing ones, cannot open a shell, and cannot tunnel traffic through the nest.
 - With the HTTPS transport, use mutual TLS where you can, so the nest only accepts bundles from machines it knows. The nest's trust in a client certificate is only as strong as the protection of its key file on the machine.
 - Session bundles may contain sensitive file contents. Secure the nest accordingly — treat it like a backup server.
-- Mina does not capture passwords typed at prompts (auditd's `log_passwd=off` default is preserved).
+- Mina does not record keystrokes: no `pam_tty_audit`. With auditd it reads exec records (program and arguments), never terminal input.
 
 ## Roadmap
 
@@ -294,7 +324,11 @@ mina/
     ├── main.rs          # CLI entrypoint + install helpers
     ├── nest.rs          # mina-nest binary: HTTPS ingest endpoint
     ├── pam_hook.rs      # PAM session open/close handlers
-    ├── command_log.rs   # Shell hook + auditd harvester
+    ├── command_log.rs   # Shell hook + auditd sources, source choice
+    ├── command_log/
+    │   ├── auditd.rs      # audit record parser, session window
+    │   └── audit_files.rs # auditd.conf, log rotation, rules
+
     ├── file_capture.rs  # Path extraction, text detection, snapshotting
     ├── bundle.rs        # session.json + archive assembly
     └── transport/

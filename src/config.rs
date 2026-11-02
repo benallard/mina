@@ -14,6 +14,10 @@ pub struct Config {
     #[serde(default)]
     pub session: SessionConfig,
 
+    /// Reading commands from the audit log (sessions without a shell).
+    #[serde(default)]
+    pub audit: AuditConfig,
+
     /// Staging directory where bundles are assembled before being shipped.
     /// Default: /var/lib/mina/staging. Created `0700` if missing; must be a
     /// real directory (not a symlink) owned by root and not writable by
@@ -157,6 +161,62 @@ fn default_pam_services() -> Vec<String> {
     vec!["sshd".to_owned(), "login".to_owned()]
 }
 
+/// `[audit]`: the auditd command source, used for sessions in which no
+/// login shell loaded the shell hook (`ssh host cmd`, scp, sftp).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditConfig {
+    /// The audit log. Default: `log_file` from /etc/audit/auditd.conf.
+    #[serde(default)]
+    pub log_file: Option<PathBuf>,
+
+    /// How long session-close waits for auditd to write the session's last
+    /// records (milliseconds). Default: 1000.
+    #[serde(default = "default_wait_ms")]
+    pub wait_ms: u64,
+
+    /// At most this many commands from the audit log per bundle; the rest
+    /// are dropped and `commands_truncated` is set. Default: 10000.
+    #[serde(default = "default_max_commands")]
+    pub max_commands: usize,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            log_file: None,
+            wait_ms: default_wait_ms(),
+            max_commands: default_max_commands(),
+        }
+    }
+}
+
+impl AuditConfig {
+    /// Read only the `[audit]` table, so that `session-open` does not
+    /// depend on the rest of the file being valid.
+    pub fn load(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        Self::parse(&text)
+    }
+
+    fn parse(text: &str) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct AuditOnly {
+            #[serde(default)]
+            audit: AuditConfig,
+        }
+        let only: AuditOnly = toml::from_str(text)?;
+        Ok(only.audit)
+    }
+}
+
+fn default_wait_ms() -> u64 {
+    1000
+}
+
+fn default_max_commands() -> usize {
+    10_000
+}
+
 fn default_size_limit() -> u64 {
     512
 }
@@ -209,6 +269,13 @@ skip_paths = ["/proc", "/sys", "/dev", "/tmp", "/run"]
 
 [session]
 pam_services = ["sshd", "login"]          # PAM services that open a session (SSH, console)
+
+[audit]
+# Commands of sessions without a login shell (ssh host cmd, scp, sftp) come
+# from the audit log; needs auditd and `mina install-audit`.
+# log_file = "/var/log/audit/audit.log"   # default: log_file from auditd.conf
+# wait_ms = 1000                          # wait for auditd at session close
+# max_commands = 10000                    # per bundle
 "#;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -261,6 +328,30 @@ mod tests {
             SessionConfig::parse(minimal).unwrap(),
             SessionConfig::default()
         );
+    }
+
+    #[test]
+    fn audit_defaults() {
+        let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+        assert_eq!(config.audit, AuditConfig::default());
+        assert_eq!(config.audit.wait_ms, 1000);
+        assert_eq!(config.audit.max_commands, 10_000);
+        assert_eq!(config.audit.log_file, None);
+        assert_eq!(AuditConfig::parse("").unwrap(), AuditConfig::default());
+    }
+
+    #[test]
+    fn audit_configurable_on_its_own() {
+        // No [nest]: the full Config does not load, the audit part does.
+        let text = r#"
+            [audit]
+            log_file = "/srv/audit.log"
+            wait_ms = 200
+        "#;
+        let audit = AuditConfig::parse(text).unwrap();
+        assert_eq!(audit.log_file, Some(PathBuf::from("/srv/audit.log")));
+        assert_eq!(audit.wait_ms, 200);
+        assert_eq!(audit.max_commands, 10_000);
     }
 
     #[test]
