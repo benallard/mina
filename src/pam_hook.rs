@@ -19,6 +19,9 @@ pub trait PamSession {
     fn source_ip(&self) -> Option<&str>;
     /// `PAM_TTY` as given to pam_exec, if set and not empty.
     fn tty(&self) -> Option<&str>;
+    /// The kernel audit session id (`ses=` in audit records), if
+    /// `pam_loginuid` set one for this login.
+    fn audit_session(&self) -> Option<u32>;
     fn hostname(&self) -> &str;
     fn opened_at(&self) -> SystemTime;
 }
@@ -53,6 +56,13 @@ pub struct SessionMeta {
     /// Missing in state files written by mina <= 0.2.
     #[serde(default)]
     pub tty: Option<String>,
+    /// The kernel audit session id of the login (`ses=` in audit records),
+    /// set by `pam_loginuid`. Every process of the session carries it,
+    /// also after `su` or `sudo`. `None` when the login got no id (no
+    /// `pam_loginuid`, a container, a kernel without audit). Missing in
+    /// state files written by mina <= 0.3.
+    #[serde(default)]
+    pub audit_session: Option<u32>,
     pub started_at: DateTime<Utc>,
 
     /// Filled in at session close.
@@ -66,6 +76,7 @@ impl SessionMeta {
             user: session.user().to_owned(),
             source_ip: session.source_ip().map(str::to_owned),
             tty: session.tty().map(str::to_owned),
+            audit_session: session.audit_session(),
             started_at: session.opened_at().into(),
             ended_at: None,
         }
@@ -89,6 +100,7 @@ pub struct EnvPamSession {
     user: String,
     source_ip: Option<String>,
     tty: Option<String>,
+    audit_session: Option<u32>,
     hostname: String,
     opened_at: SystemTime,
 }
@@ -99,6 +111,9 @@ impl EnvPamSession {
             user: std::env::var("PAM_USER").unwrap_or_else(|_| "unknown".into()),
             source_ip: std::env::var("PAM_RHOST").ok(),
             tty: non_empty(std::env::var("PAM_TTY").ok()),
+            audit_session: std::fs::read_to_string("/proc/self/sessionid")
+                .ok()
+                .and_then(|s| parse_audit_session(&s)),
             hostname: hostname()?,
             opened_at: SystemTime::now(),
         })
@@ -115,12 +130,21 @@ impl PamSession for EnvPamSession {
     fn tty(&self) -> Option<&str> {
         self.tty.as_deref()
     }
+    fn audit_session(&self) -> Option<u32> {
+        self.audit_session
+    }
     fn hostname(&self) -> &str {
         &self.hostname
     }
     fn opened_at(&self) -> SystemTime {
         self.opened_at
     }
+}
+
+/// Parse `/proc/self/sessionid`. The kernel reports `4294967295`
+/// (`(u32)-1`) when no audit session id was set.
+pub fn parse_audit_session(text: &str) -> Option<u32> {
+    text.trim().parse::<u32>().ok().filter(|&id| id != u32::MAX)
 }
 
 /// A PAM item given to pam_exec, or `None` when it is unset or empty.
@@ -200,6 +224,7 @@ mod tests {
         user: &'static str,
         source_ip: Option<&'static str>,
         tty: Option<&'static str>,
+        audit_session: Option<u32>,
         hostname: &'static str,
         opened_at: SystemTime,
     }
@@ -214,6 +239,9 @@ mod tests {
         fn tty(&self) -> Option<&str> {
             self.tty
         }
+        fn audit_session(&self) -> Option<u32> {
+            self.audit_session
+        }
         fn hostname(&self) -> &str {
             self.hostname
         }
@@ -227,6 +255,7 @@ mod tests {
             user: "alice",
             source_ip: Some("10.0.1.42"),
             tty: Some("ssh"),
+            audit_session: Some(12),
             hostname: "web-prod-03",
             opened_at: SystemTime::now() - Duration::from_secs(300),
         }
@@ -291,7 +320,22 @@ mod tests {
         assert_eq!(meta.source_ip.as_deref(), Some("10.0.1.42"));
         assert_eq!(meta.host, "web-prod-03");
         assert_eq!(meta.tty.as_deref(), Some("ssh"));
+        assert_eq!(meta.audit_session, Some(12));
         assert!(meta.ended_at.is_none());
+    }
+
+    #[test]
+    fn audit_session_is_parsed_from_proc() {
+        assert_eq!(parse_audit_session("12\n"), Some(12));
+        assert_eq!(parse_audit_session("0"), Some(0));
+    }
+
+    #[test]
+    fn unset_or_garbage_audit_session_is_none() {
+        assert_eq!(parse_audit_session("4294967295"), None);
+        assert_eq!(parse_audit_session("-1"), None);
+        assert_eq!(parse_audit_session(""), None);
+        assert_eq!(parse_audit_session("abc"), None);
     }
 
     #[test]
@@ -323,6 +367,7 @@ mod tests {
             user: "bob",
             source_ip: None,
             tty: None,
+            audit_session: None,
             hostname: "db-01",
             opened_at: SystemTime::now(),
         };
@@ -362,6 +407,7 @@ mod tests {
         let loaded = SessionState::load(dir.path(), 777).unwrap();
         assert_eq!(loaded.meta.user, "bob");
         assert!(loaded.meta.tty.is_none());
+        assert!(loaded.meta.audit_session.is_none());
     }
 
     #[test]

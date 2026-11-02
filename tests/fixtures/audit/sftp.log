@@ -1,0 +1,42 @@
+type=SYSCALL msg=audit(1730550000.010:901): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c1a0 a1=55d0c1b0 a2=55d0c1c0 a3=0 items=2 ppid=4100 pid=4101 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=7 comm="mina" exe="/usr/bin/mina" subj=unconfined key="mina"ARCH=x86_64 SYSCALL=execve AUID="alice" UID="alice" GID="alice" EUID="alice"
+type=EXECVE msg=audit(1730550000.010:901): argc=2 a0="/usr/bin/mina" a1="session-open"
+type=CWD msg=audit(1730550000.010:901): cwd="/"
+type=PATH msg=audit(1730550000.010:901): item=0 name="/usr/bin/mina" inode=1234 dev=fe:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="root" OGID="root"
+type=PROCTITLE msg=audit(1730550000.010:901): proctitle=2F7573722F62696E2F6D696E612073657373696F6E2D6F70656E
+type=EOE msg=audit(1730550000.010:901): 
+type=SYSCALL msg=audit(1730550000.020:902): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c1a0 a1=55d0c1b0 a2=55d0c1c0 a3=0 items=2 ppid=4100 pid=4102 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=7 comm="run-parts" exe="/usr/bin/run-parts" subj=unconfined key="mina"ARCH=x86_64 SYSCALL=execve AUID="alice" UID="alice" GID="alice" EUID="alice"
+type=EXECVE msg=audit(1730550000.020:902): argc=3 a0="run-parts" a1="--lsbsysinit" a2="/etc/update-motd.d"
+type=CWD msg=audit(1730550000.020:902): cwd="/"
+type=PATH msg=audit(1730550000.020:902): item=0 name="/usr/bin/run-parts" inode=1234 dev=fe:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="root" OGID="root"
+type=PROCTITLE msg=audit(1730550000.020:902): proctitle=72756E2D7061727473202D2D6C7362737973696E6974202F6574632F7570646174652D6D6F74642E64
+type=EOE msg=audit(1730550000.020:902): 
+type=SYSCALL msg=audit(1730550000.030:903): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c1a0 a1=55d0c1b0 a2=55d0c1c0 a3=0 items=2 ppid=4102 pid=4103 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=7 comm="dash" exe="/usr/bin/dash" subj=unconfined key="mina"ARCH=x86_64 SYSCALL=execve AUID="alice" UID="alice" GID="alice" EUID="alice"
+type=EXECVE msg=audit(1730550000.030:903): argc=2 a0="/bin/sh" a1="/etc/update-motd.d/10-uname"
+type=CWD msg=audit(1730550000.030:903): cwd="/"
+type=PATH msg=audit(1730550000.030:903): item=0 name="/usr/bin/dash" inode=1234 dev=fe:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="root" OGID="root"
+type=PROCTITLE msg=audit(1730550000.030:903): proctitle=2F62696E2F7368202F6574632F7570646174652D6D6F74642E642F31302D756E616D65
+type=EOE msg=audit(1730550000.030:903): 
+type=SYSCALL msg=audit(1730550000.040:904): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c1a0 a1=55d0c1b0 a2=55d0c1c0 a3=0 items=2 ppid=4103 pid=4104 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=7 comm="uname" exe="/usr/bin/uname" subj=unconfined key="mina"ARCH=x86_64 SYSCALL=execve AUID="alice" UID="alice" GID="alice" EUID="alice"
+type=EXECVE msg=audit(1730550000.040:904): argc=2 a0="uname" a1="-snrvm"
+type=CWD msg=audit(1730550000.040:904): cwd="/"
+type=PATH msg=audit(1730550000.040:904): item=0 name="/usr/bin/uname" inode=1234 dev=fe:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="root" OGID="root"
+type=PROCTITLE msg=audit(1730550000.040:904): proctitle=756E616D65202D736E72766D
+type=EOE msg=audit(1730550000.040:904): 
+type=SYSCALL msg=audit(1730550000.200:905): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c1a0 a1=55d0c1b0 a2=55d0c1c0 a3=0 items=2 ppid=4200 pid=4201 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=7 comm="dash" exe="/usr/bin/dash" subj=unconfined key="mina"ARCH=x86_64 SYSCALL=execve AUID="alice" UID="alice" GID="alice" EUID="alice"
+type=EXECVE msg=audit(1730550000.200:905): argc=3 a0="sh" a1="-c" a2="/usr/lib/openssh/sftp-server"
+type=CWD msg=audit(1730550000.200:905): cwd="/home/alice"
+type=PATH msg=audit(1730550000.200:905): item=0 name="/usr/bin/dash" inode=1234 dev=fe:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="root" OGID="root"
+type=PROCTITLE msg=audit(1730550000.200:905): proctitle=7368202D63202F7573722F6C69622F6F70656E7373682F736674702D736572766572
+type=EOE msg=audit(1730550000.200:905): 
+type=SYSCALL msg=audit(1730550000.210:906): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c1a0 a1=55d0c1b0 a2=55d0c1c0 a3=0 items=2 ppid=4200 pid=4201 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=7 comm="sftp-server" exe="/usr/lib/openssh/sftp-server" subj=unconfined key="mina"ARCH=x86_64 SYSCALL=execve AUID="alice" UID="alice" GID="alice" EUID="alice"
+type=EXECVE msg=audit(1730550000.210:906): argc=1 a0="/usr/lib/openssh/sftp-server"
+type=CWD msg=audit(1730550000.210:906): cwd="/home/alice"
+type=PATH msg=audit(1730550000.210:906): item=0 name="/usr/lib/openssh/sftp-server" inode=1234 dev=fe:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="root" OGID="root"
+type=PROCTITLE msg=audit(1730550000.210:906): proctitle=2F7573722F6C69622F6F70656E7373682F736674702D736572766572
+type=EOE msg=audit(1730550000.210:906): 
+type=SYSCALL msg=audit(1730550000.900:907): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c1a0 a1=55d0c1b0 a2=55d0c1c0 a3=0 items=2 ppid=4100 pid=4999 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=7 comm="mina" exe="/usr/bin/mina" subj=unconfined key="mina"ARCH=x86_64 SYSCALL=execve AUID="alice" UID="alice" GID="alice" EUID="alice"
+type=EXECVE msg=audit(1730550000.900:907): argc=2 a0="/usr/bin/mina" a1="session-close"
+type=CWD msg=audit(1730550000.900:907): cwd="/"
+type=PATH msg=audit(1730550000.900:907): item=0 name="/usr/bin/mina" inode=1234 dev=fe:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="root" OGID="root"
+type=PROCTITLE msg=audit(1730550000.900:907): proctitle=2F7573722F62696E2F6D696E612073657373696F6E2D636C6F7365
+type=EOE msg=audit(1730550000.900:907): 

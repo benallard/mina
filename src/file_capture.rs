@@ -17,6 +17,28 @@ const WRITE_VERBS: &[&str] = &[
     "truncate", "patch",
 ];
 
+/// Programs whose path arguments may be captured when the command comes
+/// from the audit log rather than from what a person typed: the list in
+/// AGENTS.md. Narrower than `WRITE_VERBS`: no interpreters (`python3`
+/// runs every Ansible task), nothing that is a shell builtin anyway.
+const AUDIT_VERBS: &[&str] = &[
+    "vim", "vi", "nano", "emacs", "cp", "mv", "cat", "tee", "sed", "awk", "install", "chmod",
+    "chown",
+];
+
+/// Candidate paths of a command recorded from the audit log: those of
+/// `extract_paths`, but only if the program (the basename of the first
+/// word) is in `AUDIT_VERBS`.
+pub fn extract_paths_for_audit(command: &str) -> Vec<PathBuf> {
+    let program = command.split_whitespace().next().unwrap_or("");
+    let program = program.rsplit('/').next().unwrap_or(program);
+    if AUDIT_VERBS.contains(&program) {
+        extract_paths(command)
+    } else {
+        vec![]
+    }
+}
+
 /// Extract candidate file paths from a shell command string.
 ///
 /// Strategy:
@@ -189,6 +211,22 @@ mod tests {
     use tempfile::TempDir;
 
     // ── extract_paths ──
+
+    #[test]
+    fn audit_commands_need_a_listed_program() {
+        assert_eq!(
+            extract_paths_for_audit("cp a /etc/x"),
+            vec![PathBuf::from("/etc/x")]
+        );
+        assert_eq!(
+            extract_paths_for_audit("/usr/bin/tee -a /etc/x"),
+            vec![PathBuf::from("/etc/x")]
+        );
+        assert!(extract_paths_for_audit("python3 /root/.ansible/tmp/AnsiballZ_copy.py").is_empty());
+        assert!(extract_paths_for_audit("run-parts /etc/update-motd.d").is_empty());
+        assert!(extract_paths_for_audit("bash -c 'cat /etc/x'").is_empty());
+        assert!(extract_paths_for_audit("").is_empty());
+    }
 
     #[test]
     fn extracts_absolute_path_from_vim() {
