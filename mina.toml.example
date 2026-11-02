@@ -64,3 +64,21 @@ skip_paths = [
 # manager do not open a session of their own. Commands typed in a `su -` or
 # `sudo -i` shell are logged into the login session they were started from.
 pam_services = ["sshd", "login"]
+
+
+[audit]
+# Sessions without a login shell (ssh host cmd, scp, sftp) never load the
+# shell hook. Their commands come from auditd's exec records instead; this
+# needs auditd and `mina install-audit`. Interactive sessions are not
+# affected. All keys are optional.
+#
+# The audit log. Default: log_file from /etc/audit/auditd.conf.
+# log_file = "/var/log/audit/audit.log"
+#
+# How long session-close waits for auditd to write the session's last
+# records (milliseconds).
+# wait_ms = 1000
+#
+# At most this many commands per bundle from the audit log; session.json
+# says when the rest was dropped (commands_truncated).
+# max_commands = 10000

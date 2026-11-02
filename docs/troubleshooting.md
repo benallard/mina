@@ -14,6 +14,7 @@ or `.cmds` files are ever written to `/run/mina`.
 | PAM config looks right, manual test works, but `/run/mina` is always empty | [Step 4d](#4d--pam_exec-calls-session-close-during-login-deleting-the-state-file-immediately) — `pam_exec` phase bug |
 | `/run/mina/<ppid>.session` appears but no `.cmds` file | [Step 5](#step-5--is-the-shell-hook-installed-and-active) — shell hook missing or inactive |
 | Files appear in `/run/mina` but no bundle lands at the nest | [Step 6](#step-6--does-etcminatoml-exist-and-parse-correctly) — config or transport problem |
+| Bundles of `ssh host cmd`, scp or sftp have an empty `commands.log` | Not a fault: no login shell, no shell hook. `audit_status` in `session.json` says what is missing: `rules-missing` → `mina install-audit`; `unavailable` → install auditd; `no-session-id` → `pam_loginuid` not in the PAM stack; `not-capturing` → rules not loaded (`auditctl -l \| grep mina`, `augenrules --load`) |
 
 Work through the sections in order — each one rules out a layer of the stack.
 

@@ -126,11 +126,12 @@ scp ./somefile <user>@<test-host>:/tmp/
 
 ```bash
 cat /var/mina/<hostname>/<newest>/session.json
-# Expect, for each of the two bundles: "tty": "ssh", "shell_hook": false,
+# Without mina's audit rules (section 5 not done yet), for each of the two
+# bundles: "tty": "ssh", "shell_hook": false, "command_source": "none",
+# "audit_status": "rules-missing" (or "unavailable" without auditd),
 # "commands_recorded": 0
 cat /var/mina/<hostname>/<newest>/commands.log
-# Expect: empty. Commands of sessions without a shell are not recorded
-# until the auditd command source exists.
+# Expect: empty. Section 5 repeats this with auditd.
 ```
 
 An interactive SSH login where you log out right away gives
@@ -245,29 +246,110 @@ Verify in session.json that `/var/tmp/test_binary` appears in
 
 ---
 
-## 5. auditd fallback
+## 5. Sessions without a shell, with auditd
 
-If `auditd` and `pam_tty_audit` are available:
+Design: `docs/design/auditd-source.md`. Check first that `pam_loginuid`
+runs before mina in both login stacks:
 
 ```bash
+grep -n 'pam_loginuid\|common-session\|mina' /etc/pam.d/sshd /etc/pam.d/login
+# Expect: pam_loginuid before `@include common-session` (where the package
+# puts mina) or before the `# BEGIN mina` block (install-pam)
+```
+
+Install the rules:
+
+```bash
+sudo apt install auditd
 sudo mina install-audit
+# Expect: "wrote /etc/audit/rules.d/50-mina.rules (for x86_64)"
+sudo auditctl -l | grep mina
+# Expect: two rules (arch=b64 and arch=b32) with key=mina
+sudo mina install-audit
+# Expect: the same, no duplicate rules
 ```
 
-Repeat test 3. Verify that commands run inside a subshell or script
-are still captured:
+**A command over SSH:**
 
 ```bash
-bash -c "vim /etc/hosts"
+ssh <user>@<test-host> 'cat /etc/hostname'
 ```
 
-Verify `/etc/hosts` appears in the bundle.
-
-Then disable auditd to test shell-hook fallback:
 ```bash
-sudo systemctl stop auditd
+cat /var/mina/<hostname>/<newest>/session.json
+# Expect: "shell_hook": false, "command_source": "auditd",
+# "audit_status": "ok", and an "audit_session" equal to the ses= that
+# `sudo ausearch -k mina -i | tail` shows for that login
+cat /var/mina/<hostname>/<newest>/commands.log
+# Expect exactly: bash -c 'cat /etc/hostname', then cat /etc/hostname
+# (with the user's shell in place of bash). No run-parts/uname from motd,
+# no mina lines.
+ls /var/mina/<hostname>/<newest>/files/etc/hostname
+# Expect: captured
 ```
 
-Repeat test 3. Commands should still be captured via `PROMPT_COMMAND`.
+**sudo, and what package scripts run:**
+
+```bash
+ssh <user>@<test-host> 'sudo -n cp /etc/hostname /etc/hostname.mina-test; sudo -n apt-get install -y --reinstall nano'
+```
+
+Expect in `commands.log`: the `sudo` lines, then `cp`, `apt-get`, `dpkg`
+and what the maintainer scripts ran, as root. Note: with sudo's `use_pty`
+(Debian's default) the commands under sudo cannot be traced to the
+session's shell, so they yield **no** captured files; `files/` must not
+contain anything from the package's maintainer scripts. Remove
+`/etc/hostname.mina-test` afterwards.
+
+**scp and sftp:**
+
+```bash
+scp ./somefile <user>@<test-host>:/tmp/
+echo 'ls' | sftp <user>@<test-host>
+```
+
+Expect: `command_source: "auditd"`; `commands.log` shows the shell
+starting `/usr/lib/openssh/sftp-server`, and `sftp-server` itself. No
+files captured: what sftp-server writes is not visible in exec records.
+With `Subsystem sftp internal-sftp` in sshd_config, no commands at all.
+
+**Interactive sessions are unchanged:** repeat test 3. Expect
+`"command_source": "shell-hook"`, `"audit_status": null`, and the same
+`commands.log` as before.
+
+**Rotation during a session:** open an interactive `ssh <user>@<test-host> bash`
+(no login shell, so auditd is used), run `id`, then on the host
+`sudo auditctl --signal rotate`, run `uname -a`, log out. Expect
+`"audit_status": "ok"` and both commands.
+
+**Rules not loaded:** `sudo auditctl -D`, then `ssh <user>@<test-host> true`.
+Expect `"audit_status": "not-capturing"`. session-close waits up to
+`wait_ms` for records that never come; the client does not notice, since
+sshd lets it go before closing the PAM session. Reload with
+`sudo augenrules --load`.
+
+**auditd stopped:** `sudo systemctl stop auditd`, `ssh <user>@<test-host> true`.
+Expect `"not-capturing"` (the kernel sends records elsewhere while auditd
+is down). Start it again (`systemctl start auditd` does not reload the
+rules after an `auditctl -D`; run `augenrules --load`).
+
+When checking a bundle right after `ssh … cmd` returns, wait a few
+seconds: sshd runs `session-close` after the client has disconnected.
+
+
+**Removal:**
+
+```bash
+sudo mina uninstall-audit
+# Expect: "removed /etc/audit/rules.d/50-mina.rules"
+sudo auditctl -l | grep -c mina
+# Expect: 0
+ssh <user>@<test-host> true
+# Expect in the bundle: "audit_status": "rules-missing", empty commands.log
+```
+
+Known limit: commands run in a tmux/screen session started in an earlier
+login keep that login's audit session id, and are lost.
 
 ---
 
@@ -385,6 +467,8 @@ Repeat test 3. Verify the bundle arrives at the nest via HTTP POST.
 
 ```bash
 sudo mina uninstall-pam
+# Expect: also "removed /etc/audit/rules.d/50-mina.rules" if section 5 ran
+
 sudo rm /usr/local/bin/mina
 sudo rm /etc/mina.toml
 ```

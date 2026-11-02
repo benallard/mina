@@ -3,10 +3,17 @@
 /// Responsibility: collect the timestamped list of commands run during
 /// a session. Two sources: shell hook (PROMPT_COMMAND) or auditd.
 /// This module does not know about files, bundles, or transport.
+pub mod audit_files;
+pub mod auditd;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use audit_files::LogMark;
+use auditd::Scope;
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -19,6 +26,17 @@ pub struct CommandEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     pub command: String,
+    /// Whether file paths may be taken from this command. Always for the
+    /// shell hook (what a person typed). For auditd, only for the session's
+    /// own commands: the shell and what it starts directly, not what runs
+    /// deeper (package maintainer scripts, script internals). Not written
+    /// to `commands.log`.
+    #[serde(default = "yes", skip_serializing)]
+    pub capture_paths: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl CommandEntry {
@@ -27,7 +45,74 @@ impl CommandEntry {
             timestamp: Utc::now(),
             cwd: None,
             command: command.into(),
+            capture_paths: true,
         }
+    }
+}
+
+// ── Where the commands came from (session.json) ───────────────────────────
+
+/// The source a bundle's commands came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceKind {
+    /// The shell hook attached: what a person typed at the prompt.
+    ShellHook,
+    /// Exec records from the audit log.
+    Auditd,
+    /// Nothing recorded the session's commands; `audit_status` says why.
+    #[default]
+    None,
+}
+
+/// The outcome of consulting the audit log at session close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuditStatus {
+    /// All execs up to the session's end were read.
+    Ok,
+    /// Execs were read, but the start or the end may be missing.
+    Incomplete,
+    /// No exec of the session in the log: rules not loaded, or audit off.
+    NotCapturing,
+    /// mina's rules file is not installed (`mina install-audit`).
+    RulesMissing,
+    /// No auditd configuration or no local audit log.
+    Unavailable,
+    /// The login got no audit session id.
+    NoSessionId,
+    /// Reading the log failed.
+    Error,
+}
+
+/// Where a bundle's commands came from, for session.json.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CommandOrigin {
+    /// Whether the shell hook attached to the session (a login shell loaded
+    /// it). `false` for `ssh host cmd`, scp and sftp. Missing in bundles
+    /// from mina <= 0.2.
+    #[serde(default)]
+    pub shell_hook: bool,
+    /// Missing in bundles from mina <= 0.3.
+    #[serde(default)]
+    pub command_source: SourceKind,
+    /// `None` when the audit log was not consulted (shell hook used).
+    #[serde(default)]
+    pub audit_status: Option<AuditStatus>,
+    /// `[audit] max_commands` was reached; later commands were dropped.
+    #[serde(default)]
+    pub commands_truncated: bool,
+}
+
+/// Which source a session's commands come from. The shell hook wins when it
+/// attached: it has the commands as typed, where auditd would give one line
+/// per program (every pipe stage, `$(…)`, prompt helpers). Otherwise
+/// auditd, if it read anything.
+pub fn choose_source(hook_attached: bool, audit: Option<AuditStatus>) -> SourceKind {
+    match (hook_attached, audit) {
+        (true, _) => SourceKind::ShellHook,
+        (false, Some(AuditStatus::Ok | AuditStatus::Incomplete)) => SourceKind::Auditd,
+        _ => SourceKind::None,
     }
 }
 
@@ -108,22 +193,82 @@ fn parse_shell_hook_line(line: &str) -> Option<CommandEntry> {
         timestamp,
         cwd,
         command: cmd.trim().to_owned(),
+        capture_paths: true,
     })
 }
 
 // ── Auditd source ─────────────────────────────────────────────────────────
 
-/// Reads commands from auditd logs, scoped to the session's process tree.
-/// Requires auditd + pam_tty_audit to be configured.
-///
-/// TODO: implement ausearch integration or direct audit socket reading.
-pub struct AuditdSource;
+/// Reads the session's execs from the audit log written by auditd, scoped
+/// by the audit session id. See docs/design/auditd-source.md.
+pub struct AuditdSource {
+    pub log_file: PathBuf,
+    /// Log position at session open; `None` if session-open could not
+    /// record it (the whole log is read, and the result is `Incomplete`).
+    pub mark: Option<LogMark>,
+    pub scope: Scope,
+    /// How long to wait for auditd to write the close marker.
+    pub wait: Duration,
+}
+
+/// What `AuditdSource::collect` found.
+#[derive(Debug)]
+pub struct AuditCommands {
+    pub entries: Vec<CommandEntry>,
+    pub status: AuditStatus,
+    pub truncated: bool,
+}
+
+/// How often the log is re-read while waiting for the close marker.
+const POLL: Duration = Duration::from_millis(50);
+
+impl AuditdSource {
+    /// Read the session's commands. auditd writes asynchronously, so the
+    /// last execs may not be in the file yet: the log is re-read until the
+    /// exec of the running `mina session-close` appears (everything before
+    /// it has been written then), or until `wait` has passed.
+    pub fn collect(&self) -> Result<AuditCommands> {
+        let deadline = Instant::now() + self.wait;
+        loop {
+            let (text, start_found) = audit_files::read_since(&self.log_file, self.mark.as_ref())?;
+            let events = auditd::parse_session_events(&text, self.scope.ses);
+            let mut selected = auditd::select(&events, &self.scope);
+            if selected.closed || Instant::now() >= deadline {
+                let status = match (selected.closed, selected.any) {
+                    (true, _) if start_found => AuditStatus::Ok,
+                    (_, true) | (true, false) => AuditStatus::Incomplete,
+                    (false, false) => AuditStatus::NotCapturing,
+                };
+                if !start_found {
+                    // Without the session's first exec, the shell cannot be
+                    // told apart from a process deeper down: no candidates.
+                    for entry in &mut selected.entries {
+                        entry.capture_paths = false;
+                    }
+                }
+                return Ok(AuditCommands {
+                    entries: selected.entries,
+
+                    status,
+                    truncated: selected.truncated,
+                });
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+}
 
 impl CommandSource for AuditdSource {
     fn commands_for_session(&self, _session_pid: u32) -> Result<Vec<CommandEntry>> {
-        // TODO: invoke `ausearch --start session --pid <session_pid>`
-        // and parse the TTY_INPUT records.
-        anyhow::bail!("AuditdSource not yet implemented")
+        Ok(self.collect()?.entries)
+    }
+}
+
+/// Remove `<run_dir>/<session_key>.audit`, if any.
+pub fn remove_log_mark(run_dir: &Path, session_key: u32) -> std::io::Result<()> {
+    match std::fs::remove_file(LogMark::path(run_dir, session_key)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -143,6 +288,54 @@ mod tests {
         fn commands_for_session(&self, _pid: u32) -> Result<Vec<CommandEntry>> {
             Ok(self.0.clone())
         }
+    }
+
+    #[test]
+    fn shell_hook_wins_when_attached() {
+        for audit in [None, Some(AuditStatus::Ok), Some(AuditStatus::Error)] {
+            assert_eq!(choose_source(true, audit), SourceKind::ShellHook);
+        }
+    }
+
+    #[test]
+    fn auditd_when_it_read_something() {
+        assert_eq!(
+            choose_source(false, Some(AuditStatus::Ok)),
+            SourceKind::Auditd
+        );
+        assert_eq!(
+            choose_source(false, Some(AuditStatus::Incomplete)),
+            SourceKind::Auditd
+        );
+    }
+
+    #[test]
+    fn none_otherwise() {
+        for audit in [
+            None,
+            Some(AuditStatus::NotCapturing),
+            Some(AuditStatus::RulesMissing),
+            Some(AuditStatus::Unavailable),
+            Some(AuditStatus::NoSessionId),
+            Some(AuditStatus::Error),
+        ] {
+            assert_eq!(choose_source(false, audit), SourceKind::None, "{audit:?}");
+        }
+    }
+
+    #[test]
+    fn origin_serializes_in_kebab_case() {
+        let origin = CommandOrigin {
+            shell_hook: false,
+            command_source: SourceKind::Auditd,
+            audit_status: Some(AuditStatus::NotCapturing),
+            commands_truncated: false,
+        };
+        let json = serde_json::to_value(origin).unwrap();
+        assert_eq!(json["command_source"], "auditd");
+        assert_eq!(json["audit_status"], "not-capturing");
+        let shell = serde_json::to_value(SourceKind::ShellHook).unwrap();
+        assert_eq!(shell, "shell-hook");
     }
 
     #[test]

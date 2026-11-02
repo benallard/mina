@@ -29,7 +29,7 @@ use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::command_log::CommandEntry;
+use crate::command_log::{CommandEntry, CommandOrigin};
 use crate::file_capture::{CaptureOutcome, SkipReason};
 use crate::pam_hook::SessionMeta;
 
@@ -39,13 +39,12 @@ use crate::pam_hook::SessionMeta;
 pub struct SessionReport {
     #[serde(flatten)]
     pub meta: SessionMeta,
-    /// Whether the shell hook attached to the session (a login shell loaded
-    /// it), so that commands could be recorded. `false` for `ssh host cmd`,
-    /// scp and sftp: no shell loads the hook, and `commands.log` is empty
-    /// by design, not because recording failed. Missing in bundles from
-    /// mina <= 0.2.
-    #[serde(default)]
-    pub shell_hook: bool,
+    /// Where the commands came from: `shell_hook`, `command_source`,
+    /// `audit_status`, `commands_truncated`. An empty `commands.log` with
+    /// `command_source: "none"` is explained by `audit_status`, not a
+    /// recording failure.
+    #[serde(flatten)]
+    pub origin: CommandOrigin,
     pub commands_recorded: usize,
     pub files_captured: usize,
     pub files_skipped: Vec<SkippedFile>,
@@ -71,7 +70,7 @@ impl Bundle {
     pub fn write(
         staging_dir: &Path,
         meta: SessionMeta,
-        shell_hook: bool,
+        origin: CommandOrigin,
         commands: Vec<CommandEntry>,
         captures: Vec<(PathBuf, CaptureOutcome)>,
     ) -> Result<Self> {
@@ -113,7 +112,7 @@ impl Bundle {
         // session.json
         let report = SessionReport {
             meta,
-            shell_hook,
+            origin,
             commands_recorded: commands.len(),
             files_captured,
             files_skipped,
@@ -199,6 +198,7 @@ fn describe_skip(reason: &SkipReason) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_log::{AuditStatus, SourceKind};
     use crate::pam_hook::SessionMeta;
     use chrono::{DateTime, Utc};
     use tempfile::TempDir;
@@ -209,8 +209,16 @@ mod tests {
             user: "alice".into(),
             source_ip: Some("10.0.1.42".into()),
             tty: Some("ssh".into()),
+            audit_session: Some(12),
             started_at: Utc::now(),
             ended_at: Some(Utc::now()),
+        }
+    }
+
+    fn hook(shell_hook: bool) -> CommandOrigin {
+        CommandOrigin {
+            shell_hook,
+            ..CommandOrigin::default()
         }
     }
 
@@ -230,7 +238,8 @@ mod tests {
             CaptureOutcome::Captured("worker_processes 1;\n".into()),
         )];
 
-        let bundle = Bundle::write(staging.path(), meta, true, fake_commands(), captures).unwrap();
+        let bundle =
+            Bundle::write(staging.path(), meta, hook(true), fake_commands(), captures).unwrap();
 
         assert!(bundle.root.join("session.json").exists());
         assert!(bundle.root.join("commands.log").exists());
@@ -240,8 +249,14 @@ mod tests {
     #[test]
     fn session_json_is_valid() {
         let staging = TempDir::new().unwrap();
-        let bundle =
-            Bundle::write(staging.path(), fake_meta(), true, fake_commands(), vec![]).unwrap();
+        let bundle = Bundle::write(
+            staging.path(),
+            fake_meta(),
+            hook(true),
+            fake_commands(),
+            vec![],
+        )
+        .unwrap();
         let json = std::fs::read_to_string(bundle.root.join("session.json")).unwrap();
         let report: SessionReport = serde_json::from_str(&json).unwrap();
         assert_eq!(report.meta.user, "alice");
@@ -251,7 +266,8 @@ mod tests {
     #[test]
     fn session_json_round_trips_tty_and_shell_hook() {
         let staging = TempDir::new().unwrap();
-        let bundle = Bundle::write(staging.path(), fake_meta(), false, vec![], vec![]).unwrap();
+        let bundle =
+            Bundle::write(staging.path(), fake_meta(), hook(false), vec![], vec![]).unwrap();
         let json = std::fs::read_to_string(bundle.root.join("session.json")).unwrap();
 
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -261,7 +277,7 @@ mod tests {
 
         let report: SessionReport = serde_json::from_str(&json).unwrap();
         assert_eq!(report.meta.tty.as_deref(), Some("ssh"));
-        assert!(!report.shell_hook);
+        assert!(!report.origin.shell_hook);
         let again = serde_json::to_string_pretty(&report).unwrap();
         assert_eq!(again, json);
     }
@@ -274,7 +290,28 @@ mod tests {
             "commands_recorded":0,"files_captured":0,"files_skipped":[]}"#;
         let report: SessionReport = serde_json::from_str(json).unwrap();
         assert!(report.meta.tty.is_none());
-        assert!(!report.shell_hook);
+        assert!(!report.origin.shell_hook);
+        assert_eq!(report.origin.command_source, SourceKind::None);
+        assert_eq!(report.origin.audit_status, None);
+        assert!(report.meta.audit_session.is_none());
+    }
+
+    #[test]
+    fn session_json_has_command_origin() {
+        let staging = TempDir::new().unwrap();
+        let origin = CommandOrigin {
+            shell_hook: false,
+            command_source: SourceKind::Auditd,
+            audit_status: Some(AuditStatus::Ok),
+            commands_truncated: true,
+        };
+        let bundle = Bundle::write(staging.path(), fake_meta(), origin, vec![], vec![]).unwrap();
+        let json = std::fs::read_to_string(bundle.root.join("session.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["command_source"], "auditd");
+        assert_eq!(value["audit_status"], "ok");
+        assert_eq!(value["commands_truncated"], true);
+        assert_eq!(value["audit_session"], 12);
     }
 
     #[test]
@@ -284,7 +321,8 @@ mod tests {
             PathBuf::from("/etc/ssl/private/key.pem"),
             CaptureOutcome::Skipped(SkipReason::Binary),
         )];
-        let bundle = Bundle::write(staging.path(), fake_meta(), true, vec![], captures).unwrap();
+        let bundle =
+            Bundle::write(staging.path(), fake_meta(), hook(true), vec![], captures).unwrap();
         let json = std::fs::read_to_string(bundle.root.join("session.json")).unwrap();
         let report: SessionReport = serde_json::from_str(&json).unwrap();
         assert_eq!(report.files_captured, 0);
@@ -295,8 +333,14 @@ mod tests {
     #[test]
     fn commands_log_contains_all_commands() {
         let staging = TempDir::new().unwrap();
-        let bundle =
-            Bundle::write(staging.path(), fake_meta(), true, fake_commands(), vec![]).unwrap();
+        let bundle = Bundle::write(
+            staging.path(),
+            fake_meta(),
+            hook(true),
+            fake_commands(),
+            vec![],
+        )
+        .unwrap();
         let log = std::fs::read_to_string(bundle.root.join("commands.log")).unwrap();
         assert!(log.contains("cd /etc/nginx"));
         assert!(log.contains("vim nginx.conf"));
@@ -310,7 +354,7 @@ mod tests {
         let first = Bundle::write(
             staging.path(),
             meta.clone(),
-            true,
+            hook(true),
             vec![CommandEntry::now("echo first")],
             vec![],
         )
@@ -318,7 +362,7 @@ mod tests {
         let second = Bundle::write(
             staging.path(),
             meta,
-            true,
+            hook(true),
             vec![CommandEntry::now("echo second")],
             vec![],
         )
@@ -350,12 +394,14 @@ mod tests {
                 .with_timezone(&Utc),
             cwd: None,
             command: command.into(),
+            capture_paths: true,
         }
     }
 
     fn read_log(commands: Vec<CommandEntry>) -> String {
         let staging = TempDir::new().unwrap();
-        let bundle = Bundle::write(staging.path(), fake_meta(), true, commands, vec![]).unwrap();
+        let bundle =
+            Bundle::write(staging.path(), fake_meta(), hook(true), commands, vec![]).unwrap();
         std::fs::read_to_string(bundle.root.join("commands.log")).unwrap()
     }
 
@@ -420,7 +466,8 @@ mod tests {
                 CaptureOutcome::Skipped(SkipReason::ReadError("Permission denied".into())),
             ),
         ];
-        let bundle = Bundle::write(staging.path(), fake_meta(), true, vec![], captures).unwrap();
+        let bundle =
+            Bundle::write(staging.path(), fake_meta(), hook(true), vec![], captures).unwrap();
         let json = std::fs::read_to_string(bundle.root.join("session.json")).unwrap();
         let report: SessionReport = serde_json::from_str(&json).unwrap();
         let listed: Vec<(&str, &str)> = report
