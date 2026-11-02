@@ -6,7 +6,7 @@ use std::path::Path;
 use mina_lib::bundle::Bundle;
 use mina_lib::command_log::{CommandSource, ShellHookSource};
 use mina_lib::config::{Config, TransportKind, DEFAULT_CONFIG_PATH};
-use mina_lib::file_capture::{extract_paths, snapshot};
+use mina_lib::file_capture::{extract_paths, resolve_candidate, snapshot};
 use mina_lib::pam_hook::{EnvPamSession, SessionState};
 use mina_lib::transport::https::HttpsTransport;
 use mina_lib::transport::local::LocalTransport;
@@ -442,11 +442,17 @@ fn run_close_pipeline(state: &SessionState, run_dir: &Path, key: u32) -> Result<
         .commands_for_session(key)
         .context("failed to read command log")?;
 
-    // 3. Extract candidate file paths, deduplicated, first-seen order
+    // 3. Extract candidate file paths, resolve relative ones against the
+    //    directory the command ran in (dropped when unknown), deduplicated,
+    //    first-seen order
     let mut seen = HashSet::new();
     let candidate_paths: Vec<_> = commands
         .iter()
-        .flat_map(|e| extract_paths(&e.command))
+        .flat_map(|e| {
+            extract_paths(&e.command)
+                .into_iter()
+                .filter_map(|p| resolve_candidate(&p, e.cwd.as_deref()))
+        })
         .filter(|p| seen.insert(p.clone()))
         .collect();
 

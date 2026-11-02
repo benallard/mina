@@ -7,7 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — 0.3.0-dev
 
-_Nothing yet._
+### Fixed
+
+- **Relative paths are resolved in the user's working directory** (#3) —
+  `cat ./debian_version` after `cd /etc` was looked up relative to the
+  working directory of `mina session-close`, not the user's shell, so the
+  file was missed, or a file with the same name elsewhere was captured.
+  The shell hook now records the directory each command started in, and
+  relative candidates (`./x`, `../x`, `a/b`) are resolved against it.
+  Candidate paths are also normalised (`.` and `..` removed) before the
+  `skip_paths` check and before mirroring under `files/`.
+
+### Changed
+
+- **Shell hook log format** (`/run/mina/<key>.cmds`) is now
+  `<unix_timestamp_ms>\t<cwd>\t<command>`. Lines in the old
+  `<unix_timestamp_ms>\t<command>` format (hook installed by mina <= 0.2,
+  or a session still running across the upgrade) are still read, but
+  relative paths in them are dropped instead of guessed. Re-run
+  `mina install-pam` to update `/etc/profile.d/mina.sh`.
+  `commands.log` in the bundle is unchanged.
 
 ---
 

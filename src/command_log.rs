@@ -6,12 +6,18 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandEntry {
     pub timestamp: DateTime<Utc>,
+    /// Absolute working directory the command ran in, when the source
+    /// records it. `None` for old-format hook lines: relative paths in such
+    /// a command cannot be resolved and must not be guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
     pub command: String,
 }
 
@@ -19,6 +25,7 @@ impl CommandEntry {
     pub fn now(command: impl Into<String>) -> Self {
         Self {
             timestamp: Utc::now(),
+            cwd: None,
             command: command.into(),
         }
     }
@@ -39,9 +46,15 @@ pub trait CommandSource {
 // ── Shell hook source ─────────────────────────────────────────────────────
 
 /// Reads commands from the per-session log file written by the shell hook
-/// (PROMPT_COMMAND / trap DEBUG). The hook writes one line per command:
+/// (PROMPT_COMMAND / preexec). The hook writes one line per command:
 ///
-///   <unix_timestamp_ms>\t<command>
+///   <unix_timestamp_ms>\t<cwd>\t<command>
+///
+/// `<cwd>` is the absolute working directory the command ran in. The
+/// command itself may contain tabs, so a line is split into at most three
+/// fields. Hooks from mina <= 0.2 wrote `<unix_timestamp_ms>\t<command>`;
+/// such lines are still accepted: field 2 is only taken as the cwd if it is
+/// an absolute path, otherwise everything after the timestamp is the command.
 ///
 /// The file lives at /run/mina/<session_id>.cmds and is created by
 /// mina's shell snippet injected via /etc/profile.d/mina.sh.
@@ -71,11 +84,16 @@ impl CommandSource for ShellHookSource {
 }
 
 fn parse_shell_hook_line(line: &str) -> Option<CommandEntry> {
-    let (ts_str, cmd) = line.split_once('\t')?;
+    let (ts_str, rest) = line.split_once('\t')?;
     let ts_ms: i64 = ts_str.trim().parse().ok()?;
     let timestamp = DateTime::from_timestamp_millis(ts_ms)?;
+    let (cwd, cmd) = match rest.split_once('\t') {
+        Some((cwd, cmd)) if cwd.starts_with('/') => (Some(PathBuf::from(cwd)), cmd),
+        _ => (None, rest),
+    };
     Some(CommandEntry {
         timestamp,
+        cwd,
         command: cmd.trim().to_owned(),
     })
 }
@@ -122,6 +140,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_line_with_cwd() {
+        let line = "1717200000000\t/etc/nginx\tvim ./nginx.conf";
+        let entry = parse_shell_hook_line(line).unwrap();
+        assert_eq!(entry.cwd, Some(PathBuf::from("/etc/nginx")));
+        assert_eq!(entry.command, "vim ./nginx.conf");
+    }
+
+    #[test]
+    fn line_without_cwd_has_no_cwd() {
+        let entry = parse_shell_hook_line("1717200000000\tvim ./nginx.conf").unwrap();
+        assert_eq!(entry.cwd, None);
+        assert_eq!(entry.command, "vim ./nginx.conf");
+    }
+
+    #[test]
+    fn tab_inside_command_stays_in_command() {
+        let line = "1717200000000\t/root\tprintf 'a\tb' > ./out";
+        let entry = parse_shell_hook_line(line).unwrap();
+        assert_eq!(entry.cwd, Some(PathBuf::from("/root")));
+        assert_eq!(entry.command, "printf 'a\tb' > ./out");
+    }
+
+    #[test]
+    fn old_format_with_tab_in_command_is_not_read_as_cwd() {
+        // Field 2 is only a cwd if it is an absolute path.
+        let line = "1717200000000\tprintf 'a\tb' > ./out";
+        let entry = parse_shell_hook_line(line).unwrap();
+        assert_eq!(entry.cwd, None);
+        assert_eq!(entry.command, "printf 'a\tb' > ./out");
+    }
+
+    #[test]
     fn ignores_malformed_lines() {
         assert!(parse_shell_hook_line("not-a-timestamp\tcmd").is_none());
         assert!(parse_shell_hook_line("no-tab-at-all").is_none());
@@ -143,7 +193,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut f = std::fs::File::create(dir.path().join("1234.cmds")).unwrap();
         writeln!(f, "1717200000000\tcd /etc/nginx").unwrap();
-        writeln!(f, "1717200005000\tvim nginx.conf").unwrap();
+        writeln!(f, "1717200005000\t/etc/nginx\tvim nginx.conf").unwrap();
 
         let source = ShellHookSource {
             log_dir: dir.path().to_owned(),
@@ -151,5 +201,9 @@ mod tests {
         let entries = source.commands_for_session(1234).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].command, "vim nginx.conf");
+        assert_eq!(entries[0].cwd, None);
+        assert_eq!(entries[1].cwd, Some(PathBuf::from("/etc/nginx")));
+        assert_eq!(entries[0].cwd, None);
+        assert_eq!(entries[1].cwd, Some(PathBuf::from("/etc/nginx")));
     }
 }
