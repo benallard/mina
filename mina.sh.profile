@@ -44,11 +44,29 @@ if [ -n "$BASH_VERSION" ]; then
     # changed (`vim ./x && cd /`). The command started in the $PWD of the
     # previous prompt, so remember that one.
     _mina_cwd=$PWD
+    # PROMPT_COMMAND also runs when no command was added to the history:
+    # at the first prompt (where `history 1` is the last line of the
+    # previous session's history file, loaded after this file is sourced),
+    # after an empty line or Ctrl-C. Log only when the last history entry
+    # (number and text) differs from the one seen at the previous prompt.
+    # The first prompt only records it.
+    # With HISTCONTROL=ignoredups/ignorespace (or erasedups repeating the
+    # last command) a command adds no new entry and is not logged; with
+    # history disabled (HISTSIZE=0, set +o history) nothing is logged.
+    # _mina_hist stays unset until the first prompt (safe under `set -u`).
+    unset _mina_hist
     _mina_log_command() {
         local cwd=$_mina_cwd
         _mina_cwd=$PWD
+        local hist
+        hist=$(history 1)
+        if [ -z "${_mina_hist+set}" ] || [ "$hist" = "$_mina_hist" ]; then
+            _mina_hist=$hist
+            return
+        fi
+        _mina_hist=$hist
         local cmd
-        cmd=$(history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
+        cmd=$(printf '%s\n' "$hist" | sed 's/^[ ]*[0-9]*[ ]*//')
         [ -z "$cmd" ] && return
         local ts
         ts=$(date +%s%3N)

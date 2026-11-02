@@ -17,6 +17,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   relative candidates (`./x`, `../x`, `a/b`) are resolved against it.
   Candidate paths are also normalised (`.` and `..` removed) before the
   `skip_paths` check and before mirroring under `files/`.
+- **bash hook no longer logs commands that were not run** (#2) — the
+  first prompt logged the last line of the previous session's
+  `~/.bash_history`, and an empty line or Ctrl-C logged the previous
+  command again. The hook now logs only when the last history entry
+  changed since the previous prompt. With `HISTCONTROL=ignoredups` or
+  `ignorespace`, commands that add no history entry are not logged; with
+  history disabled, nothing is. zsh is unaffected.
 
 ### Changed
 
