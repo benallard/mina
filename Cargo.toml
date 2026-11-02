@@ -6,6 +6,9 @@ resolver = "2"
 name = "mina"
 version = "0.3.0-dev"
 edition = "2021"
+# Debian 13 (trixie) ships rustc 1.85; its package builds with that.
+# Clippy's incompatible_msrv lint then rejects newer std APIs.
+rust-version = "1.85"
 description = "Passive SSH session auditor — watches, records, reports"
 license = "MIT"
 authors = ["Benoît Allard <benoit.allard@gmx.de>"]
