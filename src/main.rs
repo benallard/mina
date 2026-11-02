@@ -5,9 +5,9 @@ use std::path::Path;
 
 use mina_lib::bundle::Bundle;
 use mina_lib::command_log::{CommandSource, ShellHookSource};
-use mina_lib::config::{Config, TransportKind, DEFAULT_CONFIG_PATH};
+use mina_lib::config::{Config, SessionConfig, TransportKind, DEFAULT_CONFIG_PATH};
 use mina_lib::file_capture::{extract_paths, resolve_candidate, snapshot};
-use mina_lib::pam_hook::{EnvPamSession, SessionState};
+use mina_lib::pam_hook::{service_opens_session, EnvPamSession, SessionState};
 use mina_lib::transport::https::HttpsTransport;
 use mina_lib::transport::local::LocalTransport;
 use mina_lib::transport::ssh::SshTransport;
@@ -341,6 +341,24 @@ fn cmd_install_audit() -> Result<()> {
     bail!("install-audit: not yet implemented (see STATUS.md Step 11)")
 }
 
+/// Whether the PAM service that called us (`PAM_SERVICE`) is one that opens
+/// a session, per `[session] pam_services` in /etc/mina.toml.
+///
+/// Reads only the `[session]` table. A missing or unreadable config falls
+/// back to the default allowlist (logged to stderr): this runs on every
+/// login and logout and must never fail them.
+fn pam_service_allowed() -> bool {
+    let session = match SessionConfig::load(Path::new(DEFAULT_CONFIG_PATH)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("mina: could not read [session] from {DEFAULT_CONFIG_PATH} ({e}); using default pam_services");
+            SessionConfig::default()
+        }
+    };
+    let service = std::env::var("PAM_SERVICE").ok();
+    service_opens_session(service.as_deref(), &session.pam_services)
+}
+
 fn cmd_session_open() -> Result<()> {
     // pam_exec invokes every session module for *both* pam_open_session and
     // pam_close_session.  Guard against being called in the wrong phase so
@@ -351,6 +369,12 @@ fn cmd_session_open() -> Result<()> {
     //   open_session  → we should act
     //   close_session → skip (session-close will handle it)
     if std::env::var("PAM_TYPE").as_deref() == Ok("close_session") {
+        return Ok(());
+    }
+
+    // Only login services (sshd, login by default) open a session. cron,
+    // su, sudo, systemd --user, ... return here without writing anything.
+    if !pam_service_allowed() {
         return Ok(());
     }
 
@@ -384,6 +408,11 @@ fn cmd_session_close() -> Result<()> {
     //   close_session → we should act
     //   open_session  → skip (session-open already handled it)
     if std::env::var("PAM_TYPE").as_deref() == Ok("open_session") {
+        return Ok(());
+    }
+
+    // Same filter as session-open: other services never had a session.
+    if !pam_service_allowed() {
         return Ok(());
     }
 

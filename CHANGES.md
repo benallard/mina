@@ -24,6 +24,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   changed since the previous prompt. With `HISTCONTROL=ignoredups` or
   `ignorespace`, commands that add no history entry are not logged; with
   history disabled, nothing is. zsh is unaffected.
+- **Only login services open a session** (#4) — with the PAM lines in a
+  stack shared by every service (Debian's `common-session`), cron jobs,
+  `su`, `sudo`, `runuser` and `systemd --user` each opened a mina session:
+  a bundle without source IP every hour, and a `.session` file for
+  `systemd --user` that was never removed. `session-open` and
+  `session-close` now do nothing unless `PAM_SERVICE` is in the new
+  `[session] pam_services` list in `/etc/mina.toml` (default
+  `["sshd", "login"]`: SSH and the local console). A missing or unreadable
+  config uses the default; a missing `PAM_SERVICE` opens no session.
+- **`su -` / `sudo -i` shells log into the enclosing login session** (#4)
+  — the shell hook looked for the session only on its parent and
+  grandparent, and read the grandparent from `/proc/<pid>/stat` in a way
+  that broke on process names with spaces. It now walks up the process
+  tree (at most 16 levels, stopping at PID 1) to the nearest ancestor with
+  a session. A nested shell that cannot write the session's command log
+  (`su - otheruser`) logs nothing instead of printing an error.
 
 ### Changed
 

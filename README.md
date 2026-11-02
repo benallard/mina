@@ -116,15 +116,23 @@ ssh_destination = "mina@nest.example.com:/var/mina"
 [capture]
 text_size_limit_kb = 512                 # skip files larger than this
 skip_paths = ["/proc", "/sys", "/dev", "/tmp"]
+
+[session]
+pam_services = ["sshd", "login"]         # PAM services that open a session
 ```
 
 ### 3. Hook into PAM
 
 ```bash
 mina install-pam
-# Adds mina hooks to /etc/pam.d/sshd (and sudo if desired)
+# Adds mina hooks to /etc/pam.d/sshd
 # Reversible: mina uninstall-pam
 ```
+
+Only the PAM services listed in `[session] pam_services` open a session
+(SSH and the local console by default), even if the hooks sit in a stack
+shared by all services such as Debian's `common-session`. Commands typed in
+a `su -` or `sudo -i` shell go into the login session they were started from.
 
 ### 4. (Optional) Enable auditd for deeper command capture
 

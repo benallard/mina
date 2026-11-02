@@ -3,8 +3,10 @@
 //!
 //! The hook writes to the hard-coded `/run/mina`; the test runs a copy of
 //! it with `_mina_log_dir` pointed at a temporary directory. The session
-//! key is the shell's `$PPID`, which is this test process, so a fake
-//! `<pid>.session` file in that directory makes the hook log.
+//! key is the nearest ancestor of the shell with a `<pid>.session` file
+//! there. Usually that is this test process (bash's `$PPID`); some tests
+//! start bash through intermediate `sh -c` processes, as `su -` or
+//! `sudo -i` would sit between the login and the shell.
 //!
 //! The hook is passed with `--rcfile`, like `/etc/profile.d` in a login
 //! shell it is sourced before bash loads `$HISTFILE`. The rcfile also sets
@@ -29,9 +31,19 @@ fn have_bash() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Run `input` in an interactive bash with the hook loaded and return the
-/// `(cwd, command)` pairs written to the `.cmds` file.
-fn run_hook(dir: &Path, history: &str, env: &[(&str, &str)], input: &str) -> Vec<(String, String)> {
+/// Wrapper that runs its arguments as a child (not `exec`), so it stays in
+/// the process tree between its parent and bash.
+const WRAP: &str = "\"$@\"; exit $?";
+
+/// Run `input` in an interactive bash with the hook loaded, started as
+/// `launch... bash ...`, and return its stderr.
+fn run_bash(
+    dir: &Path,
+    history: &str,
+    env: &[(&str, &str)],
+    input: &str,
+    launch: &[String],
+) -> String {
     let profile = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/mina.sh.profile"))
         .expect("read mina.sh.profile");
     assert_eq!(
@@ -49,16 +61,13 @@ fn run_hook(dir: &Path, history: &str, env: &[(&str, &str)], input: &str) -> Vec
         format!("set -u\n. \"{}\"\n", dir.join("hook.sh").display()),
     )
     .unwrap();
-
-    let key = std::process::id();
-    fs::write(dir.join(format!("{key}.session")), "{}").unwrap();
     fs::write(dir.join("histfile"), history).unwrap();
 
-    let mut child = Command::new("bash")
-        .arg("--noprofile")
-        .arg("--rcfile")
-        .arg(dir.join("rc.sh"))
-        .arg("-i")
+    let rc = dir.join("rc.sh").display().to_string();
+    let mut argv: Vec<String> = launch.to_vec();
+    argv.extend(["bash", "--noprofile", "--rcfile", &rc, "-i"].map(String::from));
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", dir)
@@ -78,12 +87,16 @@ fn run_hook(dir: &Path, history: &str, env: &[(&str, &str)], input: &str) -> Vec
         .write_all(input.as_bytes())
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         !stderr.contains("unbound variable") && !stderr.contains("_mina"),
         "hook error: {stderr}"
     );
+    stderr
+}
 
+/// The `(cwd, command)` pairs in `<key>.cmds`.
+fn read_cmds(dir: &Path, key: u32) -> Vec<(String, String)> {
     let cmds = fs::read_to_string(dir.join(format!("{key}.cmds"))).unwrap_or_default();
     cmds.lines()
         .map(|line| {
@@ -95,6 +108,27 @@ fn run_hook(dir: &Path, history: &str, env: &[(&str, &str)], input: &str) -> Vec
             (cwd, cmd)
         })
         .collect()
+}
+
+fn write_session(dir: &Path, key: u32) {
+    fs::write(dir.join(format!("{key}.session")), "{}").unwrap();
+}
+
+/// `sh -c` wrappers, `levels` deep, each a separate process.
+fn sh_wrappers(levels: usize) -> Vec<String> {
+    (0..levels)
+        .flat_map(|_| ["sh", "-c", WRAP, "sh"].map(String::from))
+        .collect()
+}
+
+/// Run `input` in an interactive bash with the hook loaded, the session on
+/// this test process (bash's parent), and return the logged
+/// `(cwd, command)` pairs.
+fn run_hook(dir: &Path, history: &str, env: &[(&str, &str)], input: &str) -> Vec<(String, String)> {
+    let key = std::process::id();
+    write_session(dir, key);
+    run_bash(dir, history, env, input, &[]);
+    read_cmds(dir, key)
 }
 
 fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -165,4 +199,85 @@ fn history_disabled_logs_nothing() {
         "echo one\n\necho two\nexit\n",
     );
     assert_eq!(got, Vec::new());
+}
+
+#[test]
+fn finds_session_on_a_further_ancestor() {
+    if !have_bash() {
+        eprintln!("bash not found, skipping");
+        return;
+    }
+    // Two processes between the session and bash, like sshd -> sudo -> bash.
+    // One of them is named "x) (y z" so its /proc/<pid>/stat `comm` has
+    // spaces and parens.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().display().to_string();
+    let odd = dir.path().join("x) (y z");
+    fs::copy("/bin/sh", &odd).unwrap();
+    let key = std::process::id();
+    write_session(dir.path(), key);
+    let mut launch = sh_wrappers(1);
+    launch.extend([
+        odd.display().to_string(),
+        "-c".into(),
+        WRAP.into(),
+        "sh".into(),
+    ]);
+    run_bash(dir.path(), "", &[], "echo one\nexit\n", &launch);
+    assert_eq!(read_cmds(dir.path(), key), pairs(&[(&home, "echo one")]));
+}
+
+#[test]
+fn nearest_ancestor_session_wins() {
+    if !have_bash() {
+        eprintln!("bash not found, skipping");
+        return;
+    }
+    // The test process and the intermediate sh both have a session file;
+    // the sh one (closer to bash) gets the commands.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().display().to_string();
+    let outer = std::process::id();
+    write_session(dir.path(), outer);
+    let launch: Vec<String> = [
+        "sh",
+        "-c",
+        "echo {} > \"$$.session\"; echo $$ > inner.pid; \"$@\"; exit $?",
+        "sh",
+    ]
+    .map(String::from)
+    .into();
+    run_bash(dir.path(), "", &[], "echo one\nexit\n", &launch);
+    let inner: u32 = fs::read_to_string(dir.path().join("inner.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(read_cmds(dir.path(), inner), pairs(&[(&home, "echo one")]));
+    assert_eq!(read_cmds(dir.path(), outer), Vec::new());
+}
+
+#[test]
+fn no_session_on_any_ancestor_logs_nothing() {
+    if !have_bash() {
+        eprintln!("bash not found, skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let stderr = run_bash(dir.path(), "", &[], "echo one\nexit\n", &sh_wrappers(2));
+    let cmds: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".cmds"))
+        .collect();
+    assert_eq!(cmds, Vec::<String>::new());
+    for needle in [
+        "/proc",
+        "No such file",
+        "denied",
+        "syntax error",
+        "not found",
+    ] {
+        assert!(!stderr.contains(needle), "unexpected stderr: {stderr}");
+    }
 }

@@ -44,3 +44,13 @@ skip_paths = [
     "/run",
     # "/etc/ssl/private",   # example: skip private keys
 ]
+
+
+[session]
+# PAM services that open a mina session (the PAM_SERVICE pam_exec passes).
+# "sshd" is SSH, "login" is the local console. Everything else is ignored,
+# even when mina's pam_exec lines sit in a shared stack such as Debian's
+# common-session: cron jobs, su, sudo, runuser and the systemd --user
+# manager do not open a session of their own. Commands typed in a `su -` or
+# `sudo -i` shell are logged into the login session they were started from.
+pam_services = ["sshd", "login"]
