@@ -401,6 +401,36 @@ class ArchiveSecurityTests(unittest.TestCase):
                 extract_archive(body, Path(tmpdir), max_expanded_bytes=1024 * 1024)
             self.assertIn("directory entries must be empty", str(context.exception))
 
+    def test_cleanup_on_extraction_failure(self) -> None:
+        """Test that extracted files are cleaned up when validation fails."""
+        outer = io.BytesIO()
+        with tarfile.open(fileobj=outer, mode="w:gz") as outer_tar:
+            for path in ["host1/", "host1/bundle1/", "host1/bundle1/files/"]:
+                directory = tarfile.TarInfo(path)
+                directory.type = tarfile.DIRTYPE
+                outer_tar.addfile(directory)
+            # Missing session.json - will cause validation to fail
+            member = tarfile.TarInfo("host1/bundle1/commands.log")
+            member.size = 9
+            outer_tar.addfile(member, io.BytesIO(b"echo one\n"))
+            # Add a file that should be cleaned up
+            member = tarfile.TarInfo("host1/bundle1/files/test.txt")
+            member.size = 5
+            outer_tar.addfile(member, io.BytesIO(b"hello"))
+
+        body = outer.getvalue()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            # Try to extract - should fail
+            with self.assertRaises(InvalidBundle):
+                extract_archive(body, tmpdir_path, max_expanded_bytes=1024 * 1024)
+            
+            # Verify no files/directories remain
+            remaining = list(tmpdir_path.rglob("*"))
+            # Filter out the temp dir itself
+            remaining = [p for p in remaining if p != tmpdir_path]
+            self.assertEqual(len(remaining), 0, f"Files left behind: {remaining}")
+
 
 class PathComponentSecurityTests(unittest.TestCase):
     """Test the path component validation logic."""

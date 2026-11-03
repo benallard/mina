@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import gzip
 import io
+import logging
+import shutil
 import tarfile
 import zlib
 from pathlib import Path
 from typing import BinaryIO
+
+LOGGER = logging.getLogger("mina.nest.archive")
 
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_READ = 64 * 1024
@@ -78,15 +82,43 @@ def _read_member(source: BinaryIO, destination: Path, size: int) -> None:
     destination.chmod(0o640)
 
 
+def _cleanup_extracted(paths: list[Path]) -> None:
+    """Remove all extracted files and directories on failure."""
+    for path in reversed(paths):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
+        except OSError as error:
+            LOGGER.warning("Failed to cleanup %s: %s", path, error)
+
+
 def extract_archive(
     body: bytes, temporary_root: Path, max_expanded_bytes: int
 ) -> tuple[str, str]:
-    """Validate and extract one Mina bundle into a fresh temporary directory."""
+    """
+    Validate and extract one Mina bundle into a fresh temporary directory.
+
+    Args:
+        body: The gzip-compressed tar archive bytes
+        temporary_root: Directory to extract into
+        max_expanded_bytes: Maximum allowed decompressed size
+
+    Returns:
+        Tuple of (hostname, bundle_name)
+
+    Raises:
+        InvalidBundle: If archive fails validation
+        OSError: If file operations fail
+    """
     seen: dict[str, bool] = {}
     hostname: str | None = None
     bundle_name: str | None = None
     file_bytes = 0
     entry_count = 0
+    extracted_paths: list[Path] = []  # Track all created paths for cleanup
+    
     try:
         compressed = gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb")
         bounded = BoundedReader(compressed, max_expanded_bytes)
@@ -149,6 +181,7 @@ def extract_archive(
                     if member.size != 0:
                         raise InvalidBundle("directory entries must be empty")
                     destination.mkdir(mode=0o750)
+                    extracted_paths.append(destination)
                     seen[relative] = True
                 elif member.isfile():
                     if member.size < 0 or member.size > max_expanded_bytes:
@@ -160,6 +193,7 @@ def extract_archive(
                     if source is None:
                         raise InvalidBundle("could not read archive member")
                     _read_member(source, destination, member.size)
+                    extracted_paths.append(destination)
                     seen[relative] = False
                 else:
                     raise InvalidBundle("archive contains a link or special file")
@@ -174,19 +208,32 @@ def extract_archive(
             if any(trailing):
                 raise InvalidBundle("archive contains data after its tar entries")
     except InvalidBundle:
+        # Clean up any extracted files/directories on failure
+        _cleanup_extracted(extracted_paths)
         raise
     except (tarfile.TarError, OSError, EOFError, zlib.error, ValueError) as error:
+        # Clean up any extracted files/directories on failure
+        _cleanup_extracted(extracted_paths)
         raise InvalidBundle("invalid gzip tar archive") from error
 
-    if hostname is None or bundle_name is None:
-        raise InvalidBundle("archive does not contain a bundle")
-    required = (
-        f"{hostname}/{bundle_name}/session.json",
-        f"{hostname}/{bundle_name}/commands.log",
-        f"{hostname}/{bundle_name}/files",
-    )
-    if any(path not in seen for path in required):
-        raise InvalidBundle("bundle is missing a required entry")
-    if seen[required[0]] or seen[required[1]] or not seen[required[2]]:
-        raise InvalidBundle("bundle has invalid required entries")
+    # Final validation checks - these can also fail
+    try:
+        if hostname is None or bundle_name is None:
+            raise InvalidBundle("archive does not contain a bundle")
+        required = (
+            f"{hostname}/{bundle_name}/session.json",
+            f"{hostname}/{bundle_name}/commands.log",
+            f"{hostname}/{bundle_name}/files",
+        )
+        if any(path not in seen for path in required):
+            raise InvalidBundle("bundle is missing a required entry")
+        if seen[required[0]] or seen[required[1]] or not seen[required[2]]:
+            raise InvalidBundle("bundle has invalid required entries")
+    except InvalidBundle:
+        # Clean up any extracted files/directories on validation failure
+        _cleanup_extracted(extracted_paths)
+        raise
+
+    # All validation passed, no need for cleanup list anymore
+    extracted_paths.clear()
     return hostname, bundle_name
