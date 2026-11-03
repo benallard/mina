@@ -7,7 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — 0.4.0-dev
 
-_Nothing yet._
+### Added
+
+- **Werkzeug HTTPS bundle receiver** — `nest/receiver.py` implements the
+  optional WSGI endpoint for Mina's HTTPS transport. It validates upload
+  digests and archive paths, rejects links and special files, enforces
+  compressed and expanded size limits, publishes bundles atomically, and
+  deduplicates retries. TLS termination and optional client-certificate
+  verification remain the responsibility of Caddy, nginx, or Apache.
 
 ---
 
@@ -245,4 +252,3 @@ First tagged release. The core record-and-ship pipeline is complete.
 - Syslog-on-failure for transports
 
 See `STATUS.md` for the full roadmap.
-

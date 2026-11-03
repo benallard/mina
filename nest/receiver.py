@@ -331,30 +331,29 @@ class MinaReceiver:
         descriptor = os.open(
             lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
         )
-        try:
-            with os.fdopen(descriptor, "rb") as lock:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                for attempt in range(1, MAX_NAME_ATTEMPTS + 1):
-                    name = bundle_name if attempt == 1 else f"{bundle_name}_{attempt}"
-                    destination = host_directory / name
-                    marker = host_directory / f".{name}.mina-digest"
-                    if os.path.lexists(destination):
-                        if (
-                            destination.is_dir()
-                            and not destination.is_symlink()
-                            and _read_digest_marker(marker) == digest
-                        ):
-                            return name, True
-                        continue
-                    if os.path.lexists(marker):
-                        continue
+        with os.fdopen(descriptor, "rb") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            for attempt in range(1, MAX_NAME_ATTEMPTS + 1):
+                name = bundle_name if attempt == 1 else f"{bundle_name}_{attempt}"
+                destination = host_directory / name
+                marker = host_directory / f".{name}.mina-digest"
+                if os.path.lexists(destination):
+                    if (
+                        destination.is_dir()
+                        and not destination.is_symlink()
+                        and _read_digest_marker(marker) == digest
+                    ):
+                        return name, True
+                    continue
+                if os.path.lexists(marker):
+                    continue
 
-                    os.rename(bundle_directory, destination)
-                    _write_digest_marker(marker, digest)
-                    return name, False
-                raise OSError(
-                    f"no free bundle name for {bundle_name} in {host_directory}"
-                )
+                os.rename(bundle_directory, destination)
+                _write_digest_marker(marker, digest)
+                return name, False
+            raise OSError(
+                f"no free bundle name for {bundle_name} in {host_directory}"
+            )
 
 
 def create_app(
