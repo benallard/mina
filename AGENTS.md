@@ -26,9 +26,25 @@ work — and to make writing the change ticket afterwards almost trivial.
 
 If a proposed feature moves Mina toward any of the above, question it hard.
 
+## Repository map
+
+Mina has two halves that never run on the same kind of machine:
+
+| Path | What | Runs on | Rules |
+|---|---|---|---|
+| `src/` | The agent (`mina`), Rust | every monitored machine | this file |
+| `nest/` | The nest server (`mina-nest`), Python WSGI | the one nest machine | this file + `nest/AGENTS.md` |
+| `tools/` | Analysis and query tools, Python | wherever bundles are read | this file |
+
+The two halves meet in exactly two places: the nest layout (below) and
+the HTTPS wire contract in `docs/design/https-transport.md`. Change
+either only together with both sides.
+
 ## Hard constraints
 
-These are not up for debate in pull requests or AI suggestions:
+These are not up for debate in pull requests or AI suggestions.
+
+### Everywhere
 
 1. **No database in core.** The nest is a directory tree. Period.
    A query CLI on top is fine; a required database is not.
@@ -39,6 +55,12 @@ These are not up for debate in pull requests or AI suggestions:
 3. **No binary file capture.** If a file is not valid UTF-8 (or detected
    as text by content inspection), it is skipped silently. Never fail open
    and capture something you shouldn't.
+
+### The agent (`src/`)
+
+These follow from where the agent runs: on every machine of a fleet,
+inside the login path. They do not bind the nest, which runs on one
+machine the operator chose (see `nest/AGENTS.md`).
 
 4. **No runtime dependencies on monitored machines.** The agent is a single
    static binary. It must run on a minimal base install. No Python, no
@@ -51,13 +73,12 @@ These are not up for debate in pull requests or AI suggestions:
    session ends, not keystroke by keystroke. This is a deliberate tradeoff
    — simplicity over immediacy.
 
-## Architecture
+## Architecture (agent)
 
 ```
 mina/
 ├── src/
 │   ├── main.rs          # CLI entrypoint: install, uninstall, version
-│   ├── nest.rs          # mina-nest binary: optional HTTPS ingest endpoint
 │   ├── pam_hook.rs      # PAM open/close handlers — session metadata only
 │   ├── command_log.rs   # Command stream: shell hook + auditd harvester
 │   ├── file_capture.rs  # Path extraction from commands, text detection,
@@ -69,8 +90,12 @@ mina/
 │       ├── https.rs     # HTTP POST (TLS only)
 │       └── local.rs     # Local filesystem copy (read-only, atomic rename)
 
+nest/                    # The nest server — see nest/AGENTS.md
 tools/                   # Python analysis/query tools (not part of core)
 ```
+
+`src/nest.rs` (a stub `mina-nest` binary) is a leftover; it goes away
+when `nest/` is implemented (`docs/design/nest.md`).
 
 ### Module responsibilities — strictly observed
 
@@ -126,6 +151,9 @@ bundle gets a `_2` suffix (then `_3`, …) instead of overwriting the first.
 
 Do not change this layout without a migration path. External tools
 (scripts, `grep`, `diff`) depend on it being predictable and human-readable.
+It is the contract between every transport, the nest server and `tools/`.
+The nest server keeps its own bookkeeping in a hidden `.mina-nest/`
+directory beside the host directories, never inside them.
 
 ## Transport
 
@@ -141,7 +169,8 @@ simultaneously on one machine is out of scope.
 ## Testing infrastructure
 
 Mina has three tiers of testing. Know which tier a test belongs to before
-writing it.
+writing it. The tiers below are described for the agent; the nest uses
+the same three, in Python (`nest/AGENTS.md`).
 
 ### Tier 1 — Unit tests (automated, always run in CI)
 
@@ -201,6 +230,7 @@ The runbook lives at `docs/manual-testing.md` and covers:
 - Verifying the shell hook fallback when auditd is absent entirely
 - A full session: login → edit a file → logout → inspect the nest bundle
 - Transport: SSH and HTTPS, including failure and retry behaviour
+- The nest server behind nginx with client certificates
 - `mina install-pam` and `mina uninstall-pam` are clean and reversible
 
 Manual tests are run before any release tag. They are not run in CI.
@@ -215,22 +245,32 @@ cargo clippy        # No warnings permitted
 cargo fmt --check   # Formatting is not negotiable
 ```
 
+A second job does the same for `nest/`:
+
+```
+pytest              # Tier 1 + Tier 2
+ruff check          # No warnings permitted
+ruff format --check # Formatting is not negotiable
+```
+
 No system dependencies required in CI. The pipeline must pass on a stock
 GitHub Actions `ubuntu-latest` runner without any additional setup.
 
 If a proposed test requires installing PAM headers, launching sshd, or
 running as root in CI: move it to the manual runbook instead.
 
+## Languages
 
-- **Rust** for the agent and nest server. Stable toolchain only.
-- **No unsafe** except where PAM FFI strictly requires it, and only in
-  isolated, clearly commented blocks.
-- **No async** in the agent. The session close hook runs synchronously;
-  complexity is not worth it at this scale.
-- **Python** is welcome in `tools/` for analysis, querying, and
-  report generation. Keep it stdlib-only where possible.
-- Error handling: use `anyhow` for application errors, `thiserror` for
-  library errors. No `unwrap()` in production paths.
+- **Rust** for the agent (`src/`). Stable toolchain only.
+  - **No unsafe** except where PAM FFI strictly requires it, and only in
+    isolated, clearly commented blocks.
+  - **No async** in the agent. The session close hook runs synchronously;
+    complexity is not worth it at this scale.
+  - Error handling: use `anyhow` for application errors, `thiserror` for
+    library errors. No `unwrap()` in production paths.
+- **Python** for the nest server (`nest/`) and for `tools/` (analysis,
+  querying, report generation). The nest's stack is fixed in
+  `nest/AGENTS.md`; `tools/` stays stdlib-only where possible.
 
 ## What to do when you're unsure
 
