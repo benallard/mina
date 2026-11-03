@@ -67,8 +67,9 @@ fn looks_like_path(token: &str) -> bool {
         return false;
     } // flag
       // Reject tokens containing shell metacharacters — these are arguments
-      // like 's/foo/bar/g', globs, or quoted strings, not file paths.
-    if token.contains(['\'', '"', '*', '?', '=', ';', '&', '|']) {
+      // like 's/foo/bar/g', globs, quoted strings or redirections
+      // (`>/dev/null`, `2>err.log`, `<in`), not file paths.
+    if token.contains(['\'', '"', '*', '?', '=', ';', '&', '|', '<', '>']) {
         return false;
     }
     if token.starts_with('/') {
@@ -257,6 +258,15 @@ mod tests {
     fn accepts_relative_paths() {
         let paths = extract_paths("vim ./config/settings.yml");
         assert_eq!(paths, vec![PathBuf::from("./config/settings.yml")]);
+    }
+
+    #[test]
+    fn ignores_redirections() {
+        let paths = extract_paths("ls /var/mina >/dev/null");
+        assert_eq!(paths, vec![PathBuf::from("/var/mina")]);
+        assert!(extract_paths("cat secret >./copy").is_empty());
+        assert!(extract_paths("make 2>logs/err.log").is_empty());
+        assert!(extract_paths("sort <in/data").is_empty());
     }
 
     // ── resolve_candidate ──
