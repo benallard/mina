@@ -26,6 +26,7 @@ from mina_nest.config import (
     get_nest_dir,
     get_port,
 )
+from mina_nest.identity import get_hostname
 from mina_nest.ingest import (
     InvalidBundle,
     ensure_host_directory,
@@ -99,13 +100,26 @@ class MinaReceiver:
         if not hmac.compare_digest(value, actual_digest):
             return Response("bundle digest does not match request body\n", status=400)
 
+        # Try to get hostname from client certificate (if configured)
+        cert_hostname = get_hostname(request)
+
         with tempfile.TemporaryDirectory(
             prefix=UPLOAD_TEMP_PREFIX, dir=self.nest_dir
         ) as temporary_name:
             temporary_root = Path(temporary_name)
-            hostname, bundle_name = extract_archive(
+            tarball_hostname, bundle_name = extract_archive(
                 body, temporary_root, self.max_expanded_bytes
             )
+
+            # Use cert-based hostname if available and different from tarball
+            if cert_hostname is not None and cert_hostname != tarball_hostname:
+                old_dir = temporary_root / tarball_hostname
+                new_dir = temporary_root / cert_hostname
+                old_dir.rename(new_dir)
+                hostname = cert_hostname
+            else:
+                hostname = tarball_hostname
+
             host_directory = self.nest_dir / hostname
             ensure_host_directory(host_directory)
             bundle_directory = temporary_root / hostname / bundle_name

@@ -174,5 +174,60 @@ class AppFromEnvTests(unittest.TestCase):
             self.assertTrue((nest / "host1" / BUNDLE / "session.json").is_file())
 
 
+class IdentityTests(unittest.TestCase):
+    """Tests for client certificate identity mapping."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.nest = Path(self.temporary.name) / "nest"
+
+    def test_hostname_from_tarball_when_no_cert(self) -> None:
+        """Without certificate mapping, hostname comes from tarball."""
+        client = Client(create_app(self.nest), Response)
+        body = archive()
+        digest = "sha256=" + hashlib.sha256(body).hexdigest()
+        response = client.post(
+            "/ingest",
+            data=body,
+            content_type="application/gzip",
+            headers={"X-Mina-Bundle-Digest": digest},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIn(b"host1/", response.data)
+        self.assertTrue((self.nest / "host1" / BUNDLE / "session.json").is_file())
+
+    def test_hostname_from_certificate_overrides_tarball(self) -> None:
+        """With certificate mapping, hostname from cert overrides tarball."""
+        from werkzeug.test import Client
+        from werkzeug.wrappers import Response
+
+        # Create app with mocked identity module
+        from mina_nest import MinaReceiver
+        receiver = MinaReceiver(self.nest)
+
+        body = archive()
+        digest = "sha256=" + hashlib.sha256(body).hexdigest()
+
+        # Patch get_hostname at the location where it's called (in __init__.py)
+        with mock.patch(
+            "mina_nest.get_hostname",
+            return_value="cert-host",
+        ):
+            # Use Client to properly handle WSGI
+            client = Client(receiver, Response)
+            response = client.post(
+                "/ingest",
+                data=body,
+                content_type="application/gzip",
+                headers={"X-Mina-Bundle-Digest": digest},
+            )
+
+            self.assertEqual(response.status_code, 201)
+            self.assertIn(b"cert-host/", response.data)
+            self.assertTrue((self.nest / "cert-host" / BUNDLE / "session.json").is_file())
+            # Verify tarball hostname was ignored
+            self.assertFalse((self.nest / "host1").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
