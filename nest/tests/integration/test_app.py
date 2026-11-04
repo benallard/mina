@@ -198,11 +198,9 @@ class IdentityTests(unittest.TestCase):
 
     def test_hostname_from_certificate_overrides_tarball(self) -> None:
         """With certificate mapping, hostname from cert overrides tarball."""
-        from werkzeug.test import Client
-        from werkzeug.wrappers import Response
-
         # Create app with mocked identity module
         from mina_nest import MinaReceiver
+
         receiver = MinaReceiver(self.nest)
 
         body = archive()
@@ -224,7 +222,9 @@ class IdentityTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 201)
             self.assertIn(b"cert-host/", response.data)
-            self.assertTrue((self.nest / "cert-host" / BUNDLE / "session.json").is_file())
+            self.assertTrue(
+                (self.nest / "cert-host" / BUNDLE / "session.json").is_file()
+            )
             # Verify tarball hostname was ignored
             self.assertFalse((self.nest / "host1").exists())
 
