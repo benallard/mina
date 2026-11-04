@@ -20,6 +20,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `nest/examples/` has the systemd socket and service units and an nginx
   site.
 
+### Fixed
+
+- **Redirections are not taken for file paths** — a token containing `<`
+  or `>` was a path candidate: after `cd /etc`, `ls /var/mina >/dev/null`
+  listed `/etc/>/dev/null` in `files_skipped`, and `cat secret >./copy` could
+  have captured `./copy`, which the command never named as an argument.
+  Such tokens are no longer candidates.
+
 ---
 
 ## [0.3.0] — 2026-11-02
