@@ -21,6 +21,7 @@ from mina_nest.config import (
     DEFAULT_DIR_MODE,
     DEFAULT_FILE_MODE,
     DIGEST_MARKER_PREFIX,
+    FILES_DIRECTORY,
     LOCK_FILE,
     MAX_NAME_ATTEMPTS,
     REQUIRED_BUNDLE_FILES,
@@ -251,14 +252,14 @@ def extract_archive(
                     if relative_len == 1:
                         # This is a direct child of the bundle directory
                         child_name = relative_to_bundle[0]
-                        if child_name == "files":
+                        if child_name == FILES_DIRECTORY:
                             if not member.isdir():
                                 raise InvalidBundle("files entry must be a directory")
                         elif child_name not in required_files_set:
                             raise InvalidBundle("archive contains an unexpected bundle entry")
                         elif not member.isfile():
                             raise InvalidBundle("bundle log entries must be regular files")
-                    elif relative_to_bundle[0] != "files":
+                    elif relative_to_bundle[0] != FILES_DIRECTORY:
                         raise InvalidBundle("archive entries must be under files/")
                     
                     # Check parent directory exists for nested files
@@ -315,7 +316,8 @@ def extract_archive(
         )
         if any(path not in seen for path in required):
             raise InvalidBundle("bundle is missing a required entry")
-        if seen[required[0]] or seen[required[1]] or not seen[required[2]]:
+        # seen[path] is True for directories; files/ was checked when read.
+        if any(seen[path] for path in required):
             raise InvalidBundle("bundle has invalid required entries")
     except InvalidBundle:
         # Clean up any extracted files/directories on validation failure

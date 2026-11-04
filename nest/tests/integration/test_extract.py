@@ -277,6 +277,53 @@ class ArchiveSecurityTests(unittest.TestCase):
                 extract_archive(body, Path(tmpdir), max_expanded_bytes=1024 * 1024)
             self.assertIn("missing a required entry", str(context.exception))
 
+    def test_bundle_without_files_directory_accepted(self) -> None:
+        """The agent omits files/ when it captured nothing."""
+        outer = io.BytesIO()
+        with tarfile.open(fileobj=outer, mode="w:gz") as outer_tar:
+            for path in ["host1/", "host1/bundle1/"]:
+                directory = tarfile.TarInfo(path)
+                directory.type = tarfile.DIRTYPE
+                outer_tar.addfile(directory)
+            for path, contents in {
+                "host1/bundle1/commands.log": b"",
+                "host1/bundle1/session.json": b"{}\n",
+            }.items():
+                member = tarfile.TarInfo(path)
+                member.size = len(contents)
+                outer_tar.addfile(member, io.BytesIO(contents))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = extract_archive(
+                outer.getvalue(), Path(tmpdir), max_expanded_bytes=1024 * 1024
+            )
+            self.assertEqual(result, ("host1", "bundle1"))
+            self.assertFalse((Path(tmpdir) / "host1/bundle1/files").exists())
+
+    def test_files_as_regular_file_rejected(self) -> None:
+        """files/ is optional, but when present it must be a directory."""
+        outer = io.BytesIO()
+        with tarfile.open(fileobj=outer, mode="w:gz") as outer_tar:
+            for path in ["host1/", "host1/bundle1/"]:
+                directory = tarfile.TarInfo(path)
+                directory.type = tarfile.DIRTYPE
+                outer_tar.addfile(directory)
+            for path, contents in {
+                "host1/bundle1/commands.log": b"",
+                "host1/bundle1/files": b"x",
+                "host1/bundle1/session.json": b"{}\n",
+            }.items():
+                member = tarfile.TarInfo(path)
+                member.size = len(contents)
+                outer_tar.addfile(member, io.BytesIO(contents))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(InvalidBundle) as context:
+                extract_archive(
+                    outer.getvalue(), Path(tmpdir), max_expanded_bytes=1024 * 1024
+                )
+            self.assertIn("files entry must be a directory", str(context.exception))
+
     def test_file_outside_bundle_structure_rejected(self) -> None:
         """Test that files outside the expected bundle structure are rejected."""
         outer = io.BytesIO()

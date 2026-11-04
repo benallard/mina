@@ -13,10 +13,18 @@ from mina_nest import create_app
 BUNDLE = "2026-11-02_10-00-00_alice"
 
 
-def archive(*, command_log: bytes = b"echo one\n", extra: tuple[str, bytes] | None = None) -> bytes:
+def archive(
+    *,
+    command_log: bytes = b"echo one\n",
+    extra: tuple[str, bytes] | None = None,
+    with_files: bool = True,
+) -> bytes:
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w:gz") as tar:
-        for path in ("host1/", f"host1/{BUNDLE}/", f"host1/{BUNDLE}/files/"):
+        directories = ["host1/", f"host1/{BUNDLE}/"]
+        if with_files:
+            directories.append(f"host1/{BUNDLE}/files/")
+        for path in directories:
             directory = tarfile.TarInfo(path)
             directory.type = tarfile.DIRTYPE
             tar.addfile(directory)
@@ -63,6 +71,18 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual(
             (self.nest / "host1" / f".{BUNDLE}.mina-digest").read_text().strip(),
             "sha256=" + hashlib.sha256(body).hexdigest(),
+        )
+
+    def test_bundle_without_captured_files_is_accepted(self) -> None:
+        # The agent creates files/ only when it captured a file, which most
+        # sessions do not.
+        response = self.post(archive(with_files=False))
+
+        self.assertEqual(response.status_code, 201)
+        bundle = self.nest / "host1" / BUNDLE
+        self.assertEqual(
+            sorted(path.name for path in bundle.iterdir()),
+            ["commands.log", "session.json"],
         )
 
     def test_same_digest_retry_is_idempotent(self) -> None:
