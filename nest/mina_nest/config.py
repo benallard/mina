@@ -72,8 +72,11 @@ UPLOAD_TEMP_PREFIX: Final = ".mina-upload-"
 # Validation
 # ---------------------------------------------------------------------------
 
-REQUIRED_BUNDLE_FILES: Final = ("session.json", "commands.log", "files")
-"""Required entries in every bundle (in this exact order for validation)."""
+REQUIRED_BUNDLE_FILES: Final = ("session.json", "commands.log")
+"""Regular files every bundle must contain."""
+
+FILES_DIRECTORY: Final = "files"
+"""Optional directory of captured files; the agent omits it when it captured none."""
 
 UNSAFE_PATH_COMPONENTS: Final = frozenset({"", ".", "..", "/", "\\"})
 """Path components that are never allowed."""
