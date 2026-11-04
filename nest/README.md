@@ -10,9 +10,9 @@ expose the Werkzeug development server directly to a network.
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r nest/requirements.txt
+python -m pip install ./nest
 sudo install -d -m 0750 -o mina -g mina /var/mina
-python -m nest.receiver --dir /var/mina --host 127.0.0.1 --port 8080
+python -m mina_nest --dir /var/mina --host 127.0.0.1 --port 8080
 ```
 
 Configure Mina with an endpoint whose path is `/ingest`, for example
@@ -37,7 +37,7 @@ deduplication and should be left in place.
 For a production WSGI server, import the factory and point it at the nest:
 
 ```python
-from nest.receiver import create_app
+from mina_nest import create_app
 
 app = create_app("/var/mina")
 ```

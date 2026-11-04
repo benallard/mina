@@ -208,9 +208,9 @@ ssh-copy-id -i /etc/mina/nest_key.pub mina@nest.example.com
 # On the nest machine
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r nest/requirements.txt
+python -m pip install ./nest
 sudo install -d -m 0750 -o mina -g mina /var/mina
-python -m nest.receiver --dir /var/mina --host 127.0.0.1 --port 8080
+python -m mina_nest --dir /var/mina --host 127.0.0.1 --port 8080
 # Configure Caddy, nginx, or Apache to terminate TLS and proxy /ingest to
 # http://127.0.0.1:8080/ingest
 ```

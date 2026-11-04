@@ -1,4 +1,4 @@
-"""Werkzeug WSGI receiver for Mina's HTTPS bundle transport."""
+"""mina-nest: Werkzeug WSGI receiver for Mina's HTTPS bundle transport."""
 
 from __future__ import annotations
 
@@ -20,9 +20,13 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.serving import run_simple
 from werkzeug.wrappers import Request, Response
 
-from nest.archive import InvalidBundle, extract_archive
-from nest.storage import ensure_host_directory, publish_bundle
-from nest.config import (
+from mina_nest.ingest import (
+    InvalidBundle,
+    ensure_host_directory,
+    extract_archive,
+    publish_bundle,
+)
+from mina_nest.config import (
     DIGEST_HEADER,
     DEFAULT_MAX_UPLOAD_BYTES,
     DEFAULT_MAX_EXPANDED_BYTES,
@@ -320,6 +324,3 @@ def main() -> None:
     )
     run_simple(args.host, args.port, application, threaded=True, use_reloader=False)
 
-
-if __name__ == "__main__":
-    main()
