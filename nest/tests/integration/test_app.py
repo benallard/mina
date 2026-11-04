@@ -133,15 +133,15 @@ class ReceiverTests(unittest.TestCase):
 
     def test_upload_limit_is_enforced(self) -> None:
         body = archive()
-        client = Client(
-            create_app(self.nest, max_upload_bytes=len(body) - 1), Response
-        )
+        client = Client(create_app(self.nest, max_upload_bytes=len(body) - 1), Response)
 
         response = client.post(
             "/ingest",
             data=body,
             content_type="application/gzip",
-            headers={"X-Mina-Bundle-Digest": "sha256=" + hashlib.sha256(body).hexdigest()},
+            headers={
+                "X-Mina-Bundle-Digest": "sha256=" + hashlib.sha256(body).hexdigest()
+            },
         )
 
         self.assertEqual(response.status_code, 413)
@@ -157,6 +157,7 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "application/json")
         import json
+
         data = json.loads(response.data)
         self.assertEqual(data["status"], "healthy")
         self.assertIn("timestamp", data)
@@ -178,12 +179,13 @@ class ReceiverTests(unittest.TestCase):
             content_type="application/gzip",
             headers={"X-Mina-Bundle-Digest": digest},
         )
-        
+
         # Now check metrics
         response = self.client.get("/metrics")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "application/json")
         import json
+
         data = json.loads(response.data)
         self.assertIn("uptime_seconds", data)
         self.assertIn("counters", data)

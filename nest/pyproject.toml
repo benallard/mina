@@ -28,3 +28,10 @@ packages = ["mina_nest"]
 testpaths = ["tests"]
 # Import mina_nest from this directory without installing it.
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+# Explicit, so a ruff upgrade does not change what CI enforces.
+select = ["E", "F", "W", "I", "UP", "B"]

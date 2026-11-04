@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import io
-import os
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
-from mina_nest.ingest import extract_archive, InvalidBundle
+from mina_nest.ingest import InvalidBundle, extract_archive
 
 
 class ArchiveSecurityTests(unittest.TestCase):
     """Test suite for archive security against common attacks."""
 
-    def _create_archive_with(self, extra_members: list[tuple[str, bytes, int | None]] = None) -> bytes:
+    def _create_archive_with(
+        self, extra_members: list[tuple[str, bytes, int | None]] = None
+    ) -> bytes:
         """Helper to create a valid base archive with optional extra members."""
         if extra_members is None:
             extra_members = []
@@ -44,15 +45,22 @@ class ArchiveSecurityTests(unittest.TestCase):
                     member.size = 0
                 elif member_type == "symlink":
                     member.type = tarfile.SYMTYPE
-                    member.linkname = contents.decode() if isinstance(contents, bytes) else contents
+                    member.linkname = (
+                        contents.decode() if isinstance(contents, bytes) else contents
+                    )
                     member.size = 0
                 elif member_type == "hardlink":
                     member.type = tarfile.LNKTYPE
-                    member.linkname = contents.decode() if isinstance(contents, bytes) else contents
+                    member.linkname = (
+                        contents.decode() if isinstance(contents, bytes) else contents
+                    )
                     member.size = 0
                 else:
                     member.size = len(contents)
-                outer_tar.addfile(member, io.BytesIO(contents) if member_type is None else io.BytesIO(b""))
+                outer_tar.addfile(
+                    member,
+                    io.BytesIO(contents) if member_type is None else io.BytesIO(b""),
+                )
 
         return outer.getvalue()
 
@@ -108,15 +116,15 @@ class ArchiveSecurityTests(unittest.TestCase):
         body = outer.getvalue()
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(InvalidBundle) as context:
-                extract_archive(body, Path(tmpdir), max_expanded_bytes=1024 * 1024 * 1024)
+                extract_archive(
+                    body, Path(tmpdir), max_expanded_bytes=1024 * 1024 * 1024
+                )
             self.assertIn("too many entries", str(context.exception))
 
     def test_path_traversal_with_dotdot(self) -> None:
         """Test that path traversal with ../.. is rejected."""
         body = self._create_archive_with(
-            extra_members=[
-                ("host1/bundle1/files/../../../etc/passwd", b"root\n", None)
-            ]
+            extra_members=[("host1/bundle1/files/../../../etc/passwd", b"root\n", None)]
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(InvalidBundle) as context:
@@ -471,7 +479,7 @@ class ArchiveSecurityTests(unittest.TestCase):
             # Try to extract - should fail
             with self.assertRaises(InvalidBundle):
                 extract_archive(body, tmpdir_path, max_expanded_bytes=1024 * 1024)
-            
+
             # Verify no files/directories remain
             remaining = list(tmpdir_path.rglob("*"))
             # Filter out the temp dir itself
