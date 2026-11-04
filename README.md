@@ -206,12 +206,18 @@ ssh-copy-id -i /etc/mina/nest_key.pub mina@nest.example.com
 **HTTPS transport:**
 ```bash
 # On the nest machine
-mina-nest serve --dir /var/mina --port 8765
-# Put it behind nginx/caddy with TLS for production use
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r nest/requirements.txt
+sudo install -d -m 0750 -o mina -g mina /var/mina
+python -m nest.receiver --dir /var/mina --host 127.0.0.1 --port 8080
+# Configure Caddy, nginx, or Apache to terminate TLS and proxy /ingest to
+# http://127.0.0.1:8080/ingest
 ```
 
-The `mina-nest` receiver is not written yet. Any HTTPS endpoint that meets
-the [wire contract](#https-with-mutual-tls) works.
+The [Werkzeug receiver](nest/README.md) listens on loopback; configure your
+reverse proxy to terminate TLS and optionally require client certificates.
+The receiver itself does not manage TLS.
 
 ## Browsing reports
 
