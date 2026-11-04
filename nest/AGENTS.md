@@ -52,8 +52,8 @@ If a feature needs any of these, it belongs in `tools/` or outside Mina.
 4. **Nothing deployment-specific upstream.** No CA names, subject
    formats, host naming schemes or paths of any organisation in code,
    defaults, examples or tests. A site's certificate-to-host mapping is
-   a private Python module named in `nest.toml` (the `mapper` hook), or
-   a `dn_regex` in its own config.
+   a private Python module named in `MINA_IDENTITY_MAPPER` (the `mapper`
+   hook), or a `dn_regex` in its own config.
 
 5. **The wire contract is the interface.** The nest accepts exactly
    what "Wire contract" in `docs/design/https-transport.md` describes.
@@ -67,7 +67,7 @@ If a feature needs any of these, it belongs in `tools/` or outside Mina.
 - **WSGI**, served by **gunicorn** (sync workers) on a Unix socket,
   behind **nginx** on 443. The app never imports gunicorn.
 - No Flask, no async, no ORM, no database, no multipart.
-- Config is TOML, read with `tomllib`. Errors in it fail at startup.
+- Config is via environment variables. Errors in it fail at startup.
 - Locking is `fcntl.flock`; there is no other coordination between
   workers.
 - New runtime dependencies must be packaged in Debian trixie, and need
@@ -81,13 +81,13 @@ nest/
 ├── pyproject.toml
 ├── mina_nest/
 │   ├── __init__.py     # make_app(config), app_from_env()
-│   ├── config.py       # nest.toml
+│   ├── config.py       # environment-based settings
 │   ├── ingest.py       # digest, safe unpack, atomic publish, receipts
 │   └── identity.py     # client cert → host directory; the mapper hook
 ├── tests/
 │   ├── unit/
 │   └── integration/
-└── examples/           # nest.toml, nginx snippet, systemd unit
+└── examples/           # nginx snippet, systemd unit
 ```
 
 Keep the boundaries: `identity` knows nothing about tarballs, `ingest`
