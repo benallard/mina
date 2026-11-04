@@ -206,18 +206,15 @@ ssh-copy-id -i /etc/mina/nest_key.pub mina@nest.example.com
 **HTTPS transport:**
 ```bash
 # On the nest machine
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install ./nest
-sudo install -d -m 0750 -o mina -g mina /var/mina
-python -m mina_nest --dir /var/mina --host 127.0.0.1 --port 8080
-# Configure Caddy, nginx, or Apache to terminate TLS and proxy /ingest to
-# http://127.0.0.1:8080/ingest
+sudo apt install gunicorn python3-werkzeug nginx
+# then follow nest/README.md: gunicorn on a Unix socket, nginx on 443
 ```
 
-The [Werkzeug receiver](nest/README.md) listens on loopback; configure your
-reverse proxy to terminate TLS and optionally require client certificates.
-The receiver itself does not manage TLS.
+The [nest receiver](nest/README.md) is a small Python WSGI app. In
+production it runs under gunicorn on a Unix socket, behind nginx, which
+terminates TLS and optionally requires client certificates; examples of the
+systemd units and the nginx site are in `nest/examples/`. To try it out,
+`python -m mina_nest` runs it on loopback with Werkzeug's development server.
 
 ## Browsing reports
 

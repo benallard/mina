@@ -1,0 +1,32 @@
+# The Mina nest under gunicorn, on the socket from mina-nest.socket.
+# Install both units, then: systemctl enable --now mina-nest.socket
+[Unit]
+Description=Mina nest (receives session bundles behind nginx)
+Requires=mina-nest.socket
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+# A system user of its own, owning the nest directory.
+User=mina-nest
+Group=mina-nest
+Environment=MINA_NEST_DIR=/var/mina
+# Where mina_nest is installed, until it is packaged (see nest/README.md).
+Environment=PYTHONPATH=/opt/mina-nest
+# Optional limits, in bytes (see mina_nest/config.py):
+# Environment=MINA_DEFAULT_MAX_UPLOAD_BYTES=67108864
+# Environment=MINA_DEFAULT_MAX_EXPANDED_BYTES=536870912
+# Sync workers, one request each. The timeout bounds a stuck upload.
+ExecStart=/usr/bin/gunicorn --workers 4 --timeout 120 'mina_nest:app_from_env()'
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=30
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/mina
+
+[Install]
+WantedBy=multi-user.target

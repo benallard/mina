@@ -5,7 +5,32 @@ Mina's HTTPS transport. It listens on loopback by default; terminate TLS and,
 optionally, verify client certificates at Caddy, nginx, or Apache. Do not
 expose the Werkzeug development server directly to a network.
 
-## Run
+## Production: gunicorn behind nginx
+
+gunicorn runs the app with a few worker processes on a Unix socket that only
+nginx can open; nginx terminates TLS (and client certificates, if you use
+them) on 443. The `examples/` directory has the pieces:
+
+- `mina-nest.socket`: the socket, `/run/mina-nest.sock`, owned by nginx's user
+- `mina-nest.service`: gunicorn as the `mina-nest` user, with
+  `'mina_nest:app_from_env()'`; `MINA_NEST_DIR` names the nest
+- `nginx.conf`: the site, proxying `/ingest` to the socket
+
+```sh
+sudo apt install gunicorn python3-werkzeug nginx
+sudo install -d /opt/mina-nest                 # until there is a package
+sudo cp -r nest/mina_nest /opt/mina-nest/
+sudo adduser --system --group --no-create-home mina-nest
+sudo install -d -m 0750 -o mina-nest -g mina-nest /var/mina
+sudo cp nest/examples/mina-nest.socket nest/examples/mina-nest.service /etc/systemd/system/
+sudo systemctl enable --now mina-nest.socket
+# then adapt nest/examples/nginx.conf into a site and reload nginx
+```
+
+systemd starts gunicorn on the first request. `systemctl reload mina-nest`
+restarts the workers without dropping uploads in progress.
+
+## Try it locally
 
 ```sh
 python3 -m venv .venv
@@ -34,13 +59,9 @@ success without creating a second copy; a different digest gets a `_2`, `_3`,
 … suffix. Hidden digest markers in each host directory support this retry
 deduplication and should be left in place.
 
-For a production WSGI server, import the factory and point it at the nest:
-
-```python
-from mina_nest import create_app
-
-app = create_app("/var/mina")
-```
+For another WSGI server, `mina_nest.app_from_env()` builds the app from
+`MINA_NEST_DIR`, and `mina_nest.create_app("/var/mina")` takes the directory
+directly.
 
 Run the app only behind a trusted TLS-terminating reverse proxy. Protect the
 nest directory as sensitive audit data.

@@ -15,6 +15,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   compressed and expanded size limits, publishes bundles atomically, and
   deduplicates retries. TLS termination and optional client-certificate
   verification remain the responsibility of Caddy, nginx, or Apache.
+  In production it runs under gunicorn on a Unix socket behind nginx:
+  `mina_nest:app_from_env()` builds the app from `MINA_NEST_DIR`, and
+  `nest/examples/` has the systemd socket and service units and an nginx
+  site.
 
 ---
 
