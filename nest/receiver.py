@@ -17,11 +17,20 @@ from werkzeug.wrappers import Request, Response
 
 from nest.archive import InvalidBundle, extract_archive
 from nest.storage import ensure_host_directory, publish_bundle
+from nest.config import (
+    DIGEST_HEADER,
+    DEFAULT_MAX_UPLOAD_BYTES,
+    DEFAULT_MAX_EXPANDED_BYTES,
+    UPLOAD_TEMP_PREFIX,
+    get_nest_dir,
+    get_host,
+    get_port,
+    get_max_upload_mb,
+    get_max_expanded_mb,
+)
 
 LOGGER = logging.getLogger("mina.nest")
-DIGEST_HEADER = "X-Mina-Bundle-Digest"
-DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
-DEFAULT_MAX_EXPANDED_BYTES = 512 * 1024 * 1024
+
 _DIGEST_RE = re.compile(r"sha256=[0-9a-f]{64}\Z")
 
 
@@ -80,7 +89,7 @@ class MinaReceiver:
             return Response("bundle digest does not match request body\n", status=400)
 
         with tempfile.TemporaryDirectory(
-            prefix=".mina-upload-", dir=self.nest_dir
+            prefix=UPLOAD_TEMP_PREFIX, dir=self.nest_dir
         ) as temporary_name:
             temporary_root = Path(temporary_name)
             hostname, bundle_name = extract_archive(
@@ -122,12 +131,38 @@ def _positive_integer(value: str) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Receive Mina HTTPS bundles")
-    parser.add_argument("--dir", type=Path, default=Path("/var/mina"))
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--max-upload-mb", type=_positive_integer, default=64)
-    parser.add_argument("--max-expanded-mb", type=_positive_integer, default=512)
+    parser = argparse.ArgumentParser(
+        description="Receive Mina HTTPS bundles"
+    )
+    parser.add_argument(
+        "--dir",
+        type=Path,
+        default=Path(get_nest_dir()),
+        help="Directory to store bundles (default: MINA_NEST_DIR or /var/mina)",
+    )
+    parser.add_argument(
+        "--host",
+        default=get_host(),
+        help="Host to bind to (default: MINA_HOST or 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=get_port(),
+        help="Port to listen on (default: MINA_PORT or 8080)",
+    )
+    parser.add_argument(
+        "--max-upload-mb",
+        type=_positive_integer,
+        default=get_max_upload_mb(),
+        help="Maximum upload size in MB",
+    )
+    parser.add_argument(
+        "--max-expanded-mb",
+        type=_positive_integer,
+        default=get_max_expanded_mb(),
+        help="Maximum decompressed archive size in MB",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)

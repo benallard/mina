@@ -8,12 +8,26 @@ import stat
 import tempfile
 from pathlib import Path
 
-MAX_NAME_ATTEMPTS = 100
+from nest.config import (
+    MAX_NAME_ATTEMPTS,
+    DEFAULT_DIR_MODE,
+    LOCK_FILE,
+    DIGEST_MARKER_PREFIX,
+)
+
+# Re-export for backwards compatibility
+__all__ = [
+    "MAX_NAME_ATTEMPTS",
+    "ensure_host_directory",
+    "publish_bundle",
+    "_read_digest_marker",
+    "_write_digest_marker",
+]
 
 
 def ensure_host_directory(path: Path) -> None:
     try:
-        path.mkdir(mode=0o750)
+        path.mkdir(mode=DEFAULT_DIR_MODE)
     except FileExistsError:
         mode = path.lstat().st_mode
         if not stat.S_ISDIR(mode):
@@ -31,7 +45,7 @@ def _read_digest_marker(path: Path) -> str | None:
 
 def _write_digest_marker(path: Path, digest: str) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".mina-digest-", dir=path.parent
+        prefix=DIGEST_MARKER_PREFIX, dir=path.parent
     )
     temporary_path = Path(temporary_name)
     try:
@@ -52,7 +66,7 @@ def publish_bundle(
     digest: str,
 ) -> tuple[str, bool]:
     """Atomically publish a complete bundle, or identify an idempotent retry."""
-    lock_path = nest_dir / ".mina-ingest.lock"
+    lock_path = nest_dir / LOCK_FILE
     descriptor = os.open(
         lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
     )

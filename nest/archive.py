@@ -11,10 +11,18 @@ import zlib
 from pathlib import Path
 from typing import BinaryIO
 
-LOGGER = logging.getLogger("mina.nest.archive")
+from nest.config import (
+    MAX_ARCHIVE_ENTRIES,
+    MAX_MEMBER_READ,
+    DEFAULT_DIR_MODE,
+    DEFAULT_FILE_MODE,
+    DIGEST_MARKER_PREFIX,
+    REQUIRED_BUNDLE_FILES,
+    UNSAFE_PATH_COMPONENTS,
+    MAX_PATH_COMPONENT_LENGTH,
+)
 
-MAX_ARCHIVE_ENTRIES = 100_000
-MAX_MEMBER_READ = 64 * 1024
+LOGGER = logging.getLogger("mina.nest.archive")
 
 
 class InvalidBundle(Exception):
@@ -43,13 +51,17 @@ class BoundedReader:
 
 
 def _safe_component(component: str) -> bool:
-    return (
-        component not in ("", ".", "..")
-        and len(component) <= 255
-        and "/" not in component
-        and "\\" not in component
-        and all(character.isprintable() for character in component)
-    )
+    # Check for unsafe path components (empty, ., ..)
+    if component in ("", ".", ".."):
+        return False
+    # Check for path separators
+    if "/" in component or "\\" in component:
+        return False
+    # Check length
+    if len(component) > MAX_PATH_COMPONENT_LENGTH:
+        return False
+    # Check for printable characters
+    return all(character.isprintable() for character in component)
 
 
 def _member_parts(member: tarfile.TarInfo) -> tuple[str, ...]:
@@ -79,7 +91,7 @@ def _read_member(source: BinaryIO, destination: Path, size: int) -> None:
             output.write(chunk)
             remaining -= len(chunk)
         output.flush()
-    destination.chmod(0o640)
+    destination.chmod(DEFAULT_FILE_MODE)
 
 
 def _cleanup_extracted(paths: list[Path]) -> None:
@@ -180,7 +192,7 @@ def extract_archive(
                 if member.isdir():
                     if member.size != 0:
                         raise InvalidBundle("directory entries must be empty")
-                    destination.mkdir(mode=0o750)
+                    destination.mkdir(mode=DEFAULT_DIR_MODE)
                     extracted_paths.append(destination)
                     seen[relative] = True
                 elif member.isfile():
@@ -220,10 +232,8 @@ def extract_archive(
     try:
         if hostname is None or bundle_name is None:
             raise InvalidBundle("archive does not contain a bundle")
-        required = (
-            f"{hostname}/{bundle_name}/session.json",
-            f"{hostname}/{bundle_name}/commands.log",
-            f"{hostname}/{bundle_name}/files",
+        required = tuple(
+            f"{hostname}/{bundle_name}/{f}" for f in REQUIRED_BUNDLE_FILES
         )
         if any(path not in seen for path in required):
             raise InvalidBundle("bundle is missing a required entry")
