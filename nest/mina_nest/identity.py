@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from typing import Callable
+from collections.abc import Callable
 
 from werkzeug.wrappers import Request
 
@@ -28,7 +28,7 @@ _mapper: HostMapper | None = None
 
 def _load_mapper() -> HostMapper | None:
     """Load the host mapper from MINA_IDENTITY_MAPPER environment variable.
-    
+
     The value must be in the format 'module:callable', e.g. 'my_site.mapper:dn_to_host'.
     Returns None if not configured or loading fails.
     """
