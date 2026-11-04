@@ -9,9 +9,7 @@ from typing import Final
 # Archive limits
 # ---------------------------------------------------------------------------
 
-MAX_ARCHIVE_ENTRIES: Final = int(
-    os.environ.get("MINA_MAX_ARCHIVE_ENTRIES", "100000")
-)
+MAX_ARCHIVE_ENTRIES: Final = int(os.environ.get("MINA_MAX_ARCHIVE_ENTRIES", "100000"))
 """Maximum number of entries allowed in a bundle archive."""
 
 MAX_MEMBER_READ: Final = int(
@@ -37,9 +35,7 @@ DEFAULT_MAX_EXPANDED_BYTES: Final = int(
 # Storage/naming limits
 # ---------------------------------------------------------------------------
 
-MAX_NAME_ATTEMPTS: Final = int(
-    os.environ.get("MINA_MAX_NAME_ATTEMPTS", "100")
-)
+MAX_NAME_ATTEMPTS: Final = int(os.environ.get("MINA_MAX_NAME_ATTEMPTS", "100"))
 """Maximum attempts to find a unique bundle name."""
 
 # ---------------------------------------------------------------------------
@@ -79,9 +75,7 @@ UPLOAD_TEMP_PREFIX: Final = ".mina-upload-"
 REQUIRED_BUNDLE_FILES: Final = ("session.json", "commands.log", "files")
 """Required entries in every bundle (in this exact order for validation)."""
 
-UNSAFE_PATH_COMPONENTS: Final = frozenset(
-    {"", ".", "..", "/", "\\"}
-)
+UNSAFE_PATH_COMPONENTS: Final = frozenset({"", ".", "..", "/", "\\"})
 """Path components that are never allowed."""
 
 MAX_PATH_COMPONENT_LENGTH: Final = 255
