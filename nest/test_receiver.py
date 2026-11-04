@@ -131,6 +131,49 @@ class ReceiverTests(unittest.TestCase):
         response = self.client.post("/ingest", data=b"not gzip")
         self.assertEqual(response.status_code, 415)
 
+    def test_health_endpoint(self) -> None:
+        """Test that /health endpoint returns 200 OK."""
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        import json
+        data = json.loads(response.data)
+        self.assertEqual(data["status"], "healthy")
+        self.assertIn("timestamp", data)
+        self.assertIn("uptime_seconds", data)
+
+    def test_health_endpoint_rejects_post(self) -> None:
+        """Test that /health endpoint only accepts GET."""
+        response = self.client.post("/health", data=b"")
+        self.assertEqual(response.status_code, 405)
+
+    def test_metrics_endpoint(self) -> None:
+        """Test that /metrics endpoint returns metrics."""
+        # First make a request to generate some metrics
+        body = archive()
+        digest = "sha256=" + hashlib.sha256(body).hexdigest()
+        self.client.post(
+            "/ingest",
+            data=body,
+            content_type="application/gzip",
+            headers={"X-Mina-Bundle-Digest": digest},
+        )
+        
+        # Now check metrics
+        response = self.client.get("/metrics")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        import json
+        data = json.loads(response.data)
+        self.assertIn("uptime_seconds", data)
+        self.assertIn("counters", data)
+        self.assertIn("requests.success", data["counters"])
+
+    def test_metrics_endpoint_rejects_post(self) -> None:
+        """Test that /metrics endpoint only accepts GET."""
+        response = self.client.post("/metrics", data=b"")
+        self.assertEqual(response.status_code, 405)
+
 
 if __name__ == "__main__":
     unittest.main()
