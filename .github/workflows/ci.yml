@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -25,7 +25,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v4.1.1
         with:
           path: |
             ~/.cargo/registry
@@ -53,9 +53,9 @@ jobs:
         working-directory: nest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.1.1
         with:
           python-version: "3.13"
 
@@ -84,7 +84,7 @@ jobs:
       contents: write   # required to create / update the GitHub release
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
 
       - name: Install stable Rust toolchain + musl target
         uses: dtolnay/rust-toolchain@stable
@@ -95,7 +95,7 @@ jobs:
         run: sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry + build artefacts
-        uses: actions/cache@v4
+        uses: actions/cache@v4.1.1
         with:
           path: |
             ~/.cargo/registry
@@ -195,7 +195,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
 
       - name: Install stable Rust toolchain + musl target
         uses: dtolnay/rust-toolchain@stable
@@ -206,7 +206,7 @@ jobs:
         run: sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry + build artefacts
-        uses: actions/cache@v4
+        uses: actions/cache@v4.1.1
         with:
           path: |
             ~/.cargo/registry
