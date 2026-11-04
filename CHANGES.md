@@ -9,7 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Werkzeug HTTPS bundle receiver** — `nest/receiver.py` implements the
+- **Werkzeug HTTPS bundle receiver** — `nest/` (package `mina_nest`) implements the
   optional WSGI endpoint for Mina's HTTPS transport. It validates upload
   digests and archive paths, rejects links and special files, enforces
   compressed and expanded size limits, publishes bundles atomically, and

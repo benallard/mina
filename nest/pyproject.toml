@@ -1,0 +1,30 @@
+[build-system]
+# setuptools as packaged in Debian trixie (pybuild-plugin-pyproject).
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mina-nest"
+version = "0.4.0.dev0"
+description = "Mina nest: receives session bundles over HTTPS into the nest directory tree"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Benoît Allard", email = "benoit.allard@gmx.de" }]
+requires-python = ">=3.13"
+# Werkzeug as in Debian trixie (python3-werkzeug 3.1); nothing else at runtime.
+dependencies = ["werkzeug>=3.1,<4"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+dev = ["pytest", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/benallard/mina"
+
+[tool.setuptools]
+packages = ["mina_nest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import mina_nest from this directory without installing it.
+pythonpath = ["."]

@@ -8,7 +8,7 @@ from pathlib import Path
 from werkzeug.test import Client
 from werkzeug.wrappers import Response
 
-from nest.receiver import create_app
+from mina_nest import create_app
 
 BUNDLE = "2026-11-02_10-00-00_alice"
 
