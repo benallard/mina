@@ -12,7 +12,7 @@ class PathComponentSecurityTests(unittest.TestCase):
 
     def test_safe_component_validation(self) -> None:
         """Test the _safe_component function logic through member validation."""
-        from mina_nest.ingest import _safe_component, _member_parts
+        from mina_nest.ingest import _safe_component
 
         # Valid components
         self.assertTrue(_safe_component("normal"))
@@ -32,8 +32,8 @@ class PathComponentSecurityTests(unittest.TestCase):
 
     def test_member_parts_validation(self) -> None:
         """Test the _member_parts function validation."""
+
         from mina_nest.ingest import _member_parts
-        import tarfile
 
         # Create mock TarInfo objects
         class MockTarInfo:
