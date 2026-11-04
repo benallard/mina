@@ -1,14 +1,16 @@
 import hashlib
 import io
+import os
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from werkzeug.test import Client
 from werkzeug.wrappers import Response
 
-from mina_nest import create_app
+from mina_nest import app_from_env, create_app
 
 BUNDLE = "2026-11-02_10-00-00_alice"
 
@@ -195,6 +197,26 @@ class ReceiverTests(unittest.TestCase):
         """Test that /metrics endpoint only accepts GET."""
         response = self.client.post("/metrics", data=b"")
         self.assertEqual(response.status_code, 405)
+
+
+class AppFromEnvTests(unittest.TestCase):
+    def test_nest_dir_comes_from_the_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            nest = Path(temporary) / "nest"
+            with mock.patch.dict(os.environ, {"MINA_NEST_DIR": str(nest)}):
+                client = Client(app_from_env(), Response)
+            body = archive()
+            response = client.post(
+                "/ingest",
+                data=body,
+                content_type="application/gzip",
+                headers={
+                    "X-Mina-Bundle-Digest": "sha256=" + hashlib.sha256(body).hexdigest()
+                },
+            )
+
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue((nest / "host1" / BUNDLE / "session.json").is_file())
 
 
 if __name__ == "__main__":

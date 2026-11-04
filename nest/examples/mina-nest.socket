@@ -1,0 +1,14 @@
+# Unix socket for the Mina nest; systemd hands it to gunicorn.
+# Only nginx may connect: no TCP port, nothing else can reach the app.
+[Unit]
+Description=Mina nest socket
+
+[Socket]
+ListenStream=/run/mina-nest.sock
+# The user nginx runs as (www-data on Debian).
+SocketUser=www-data
+SocketGroup=www-data
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

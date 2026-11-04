@@ -290,6 +290,17 @@ def create_app(
     )
 
 
+def app_from_env() -> MinaReceiver:
+    """Build the app from the environment, for a WSGI server such as gunicorn:
+
+    gunicorn 'mina_nest:app_from_env()'
+
+    The nest directory is MINA_NEST_DIR (default /var/mina); the limits are
+    those of mina_nest.config.
+    """
+    return create_app(get_nest_dir())
+
+
 def _positive_integer(value: str) -> int:
     number = int(value)
     if number <= 0:
