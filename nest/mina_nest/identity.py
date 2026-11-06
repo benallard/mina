@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import importlib
 import os
-import re
 from collections.abc import Callable, Mapping
+
+from mina_nest.names import is_safe_hostname
 
 VERIFY_HEADER = "X-SSL-Client-Verify"
 """nginx's $ssl_client_verify: SUCCESS, NONE or FAILED:<reason>."""
@@ -29,10 +30,6 @@ MAPPER_ENV = "MINA_IDENTITY_MAPPER"
 
 HostMapper = Callable[[str], str | None]
 """Takes a subject DN, returns the host directory name, or None if unknown."""
-
-# One path component: letters, digits, '.', '-', '_'; not starting with
-# '.' or '-' (no '..', no hidden names next to the nest's own bookkeeping).
-_HOSTNAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,252}")
 
 
 class IdentityRefused(Exception):
@@ -63,11 +60,6 @@ def load_mapper(spec: str | None) -> HostMapper | None:
 def mapper_from_env() -> HostMapper | None:
     """The mapper named in MINA_IDENTITY_MAPPER, if any."""
     return load_mapper(os.environ.get(MAPPER_ENV))
-
-
-def is_safe_hostname(name: object) -> bool:
-    """True if `name` can be used as a host directory name."""
-    return isinstance(name, str) and _HOSTNAME_RE.fullmatch(name) is not None
 
 
 def host_from_headers(headers: Mapping[str, str], mapper: HostMapper) -> str:

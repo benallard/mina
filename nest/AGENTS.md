@@ -83,6 +83,7 @@ nest/
 │   ├── __init__.py     # make_app(config), app_from_env()
 │   ├── config.py       # environment-based settings
 │   ├── ingest.py       # digest, safe unpack, atomic publish, receipts
+│   ├── names.py        # host and bundle directory names, one rule each
 │   └── identity.py     # client cert → host directory; the mapper hook
 ├── tests/
 │   ├── unit/
