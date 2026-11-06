@@ -353,9 +353,7 @@ Why there and in this form:
 - Bundles shipped by the SSH or local transport have no receipt; they
   are simply bundles whose digest the nest does not know.
 
-Moving to it needs a note for nests already running: either move the
-existing markers into receipts, or accept that resends of older bundles
-are stored again as `_2`.
+No nest runs in production yet, so the switch needs no migration.
 
 ### Atomic publish and resends
 
@@ -469,8 +467,7 @@ system packages, no nginx.
 
 ## Open
 
-- The `.mina-nest/` state directory and receipts (above), with a
-  migration note.
+- The `.mina-nest/` state directory and receipts (above).
 - The Tier 3 runbook section.
 - The `mina-nest` Debian package (packaging repository).
 - Spooling the body to a file instead of memory, if bundles grow.
