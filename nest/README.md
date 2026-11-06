@@ -43,8 +43,7 @@ it in `MINA_IDENTITY_MAPPER`:
 
 ```python
 # site_mina/identity.py, anywhere on the nest's PYTHONPATH
-def host_from_dn(dn: str) -> str | None:
-    ...
+def host_from_dn(dn: str) -> str | None: ...
 ```
 
 ```ini
