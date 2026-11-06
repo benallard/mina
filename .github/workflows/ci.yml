@@ -107,7 +107,7 @@ jobs:
       - name: Build static release binaries (musl)
         run: |
           cargo build --release --target ${{ env.MUSL_TARGET }} \
-            --bin mina --bin mina-nest
+            --bin mina
 
       - name: Prepare artefacts
         run: |
@@ -115,18 +115,14 @@ jobs:
           SHORT_SHA=$(git rev-parse --short HEAD)
 
           # Commit-stamped copies (permanent, one per build)
-          cp "$BINDIR/mina"      "mina-linux-x86_64-${SHORT_SHA}"
-          cp "$BINDIR/mina-nest" "mina-nest-linux-x86_64-${SHORT_SHA}"
+          cp "$BINDIR/mina" "mina-linux-x86_64-${SHORT_SHA}"
 
           # Stable names — always the latest dev build (overwritten each run)
-          cp "$BINDIR/mina"      "mina-linux-x86_64"
-          cp "$BINDIR/mina-nest" "mina-nest-linux-x86_64"
+          cp "$BINDIR/mina" "mina-linux-x86_64"
 
           sha256sum \
             "mina-linux-x86_64-${SHORT_SHA}" \
-            "mina-nest-linux-x86_64-${SHORT_SHA}" \
             "mina-linux-x86_64" \
-            "mina-nest-linux-x86_64" \
             > "sha256sums-${SHORT_SHA}.txt"
 
           echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
@@ -154,9 +150,7 @@ jobs:
           # runs.  --clobber is what keeps the stable download URLs always fresh.
           gh release upload dev --clobber \
             "mina-linux-x86_64-${SHORT_SHA}" \
-            "mina-nest-linux-x86_64-${SHORT_SHA}" \
             "mina-linux-x86_64" \
-            "mina-nest-linux-x86_64" \
             "sha256sums-${SHORT_SHA}.txt"
 
           # Update the release body. GHA context values are in env vars
@@ -169,7 +163,6 @@ jobs:
           | Binary | Purpose |
           |---|---|
           | \`mina-linux-x86_64\` | Agent — install on monitored machines |
-          | \`mina-nest-linux-x86_64\` | Nest ingest server (HTTPS transport) |
 
           **Stable-name install (always the latest dev build):**
           \`\`\`bash
@@ -218,16 +211,15 @@ jobs:
       - name: Build static release binaries (musl)
         run: |
           cargo build --release --target ${{ env.MUSL_TARGET }} \
-            --bin mina --bin mina-nest
+            --bin mina
 
       - name: Prepare artefacts
         run: |
           BINDIR=target/${{ env.MUSL_TARGET }}/release
           TAG="${{ github.ref_name }}"
 
-          cp "$BINDIR/mina"      "mina-linux-x86_64"
-          cp "$BINDIR/mina-nest" "mina-nest-linux-x86_64"
-          sha256sum mina-linux-x86_64 mina-nest-linux-x86_64 > sha256sums.txt
+          cp "$BINDIR/mina" "mina-linux-x86_64"
+          sha256sum mina-linux-x86_64 > sha256sums.txt
 
           echo "TAG=${TAG}" >> "$GITHUB_ENV"
 
@@ -247,5 +239,4 @@ jobs:
             --title "${{ env.TAG }}" \
             --notes-file release-notes.md \
             mina-linux-x86_64 \
-            mina-nest-linux-x86_64 \
             sha256sums.txt

@@ -23,6 +23,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   client certificate (verified by nginx) maps to; uploads without a
   verified, mapped certificate are refused.
 
+### Removed
+
+- **`mina-nest` Rust stub** — `src/nest.rs` only printed "not yet
+  implemented"; the nest is the Python app in `nest/`. Releases no
+  longer ship a `mina-nest-linux-x86_64` binary.
+
 ### Fixed
 
 - **Redirections are not taken for file paths** — a token containing `<`

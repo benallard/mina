@@ -12,7 +12,7 @@ Run this runbook before tagging any release.
 - A fresh Debian or Ubuntu VM (virtualbox, KVM, or cloud instance)
 - A second machine or VM to act as the nest (not needed for local transport tests)
 - SSH access to both
-- The `mina` and `mina-nest` binaries built for the target architecture
+- The `mina` binary built for the target architecture
 
 ---
 
@@ -447,8 +447,9 @@ the `staging_dir` line and `/srv/mina-staging-test` afterwards.
 
 ## 8. HTTPS transport
 
-`mina-nest` is not written yet, so this test uses nginx with client-cert
-verification in front of a tiny endpoint that saves each body.
+This tests the agent's side: nginx with client-cert verification in
+front of a tiny endpoint that saves each body. The nest server in
+`nest/` has no runbook section yet.
 
 On the nest machine, make a throwaway CA, a server cert and a client cert
 (use the nest's real name or IP as `NEST`):
