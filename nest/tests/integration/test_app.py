@@ -196,37 +196,122 @@ class IdentityTests(unittest.TestCase):
         self.assertIn(b"host1/", response.data)
         self.assertTrue((self.nest / "host1" / BUNDLE / "session.json").is_file())
 
-    def test_hostname_from_certificate_overrides_tarball(self) -> None:
-        """With certificate mapping, hostname from cert overrides tarball."""
-        # Create app with mocked identity module
-        from mina_nest import MinaReceiver
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
 
-        receiver = MinaReceiver(self.nest)
+    def post(self, mapper: str, headers: dict[str, str]):
+        """POST a bundle to an app built from the environment with `mapper`.
 
+        `builtins:str` maps a DN to itself, so the DN names the host.
+        """
+        env = {"MINA_NEST_DIR": str(self.nest), "MINA_IDENTITY_MAPPER": mapper}
+        with mock.patch.dict(os.environ, env):
+            client = Client(app_from_env(), Response)
         body = archive()
         digest = "sha256=" + hashlib.sha256(body).hexdigest()
+        return client.post(
+            "/ingest",
+            data=body,
+            content_type="application/gzip",
+            headers={"X-Mina-Bundle-Digest": digest, **headers},
+        )
 
-        # Patch get_hostname at the location where it's called (in __init__.py)
-        with mock.patch(
-            "mina_nest.get_hostname",
-            return_value="cert-host",
+    def stored(self) -> list[str]:
+        """Everything under the nest's parent, outside .mina-* bookkeeping."""
+        root = self.nest.parent
+        return sorted(
+            str(path.relative_to(root))
+            for path in root.rglob("*")
+            if not any(part.startswith(".") for part in path.parts)
+        )
+
+    def test_hostname_from_certificate_overrides_tarball(self) -> None:
+        response = self.post(
+            "builtins:str",
+            {"X-SSL-Client-Verify": "SUCCESS", "X-SSL-Client-DN": "cert-host"},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data, f"cert-host/{BUNDLE}\n".encode())
+        self.assertTrue((self.nest / "cert-host" / BUNDLE / "session.json").is_file())
+        self.assertFalse((self.nest / "host1").exists())
+
+    def test_dn_without_verified_certificate_is_refused(self) -> None:
+        # Any client can send a DN header; only nginx's verdict counts.
+        for headers in (
+            {"X-SSL-Client-DN": "cert-host"},
+            {"X-SSL-Client-Verify": "NONE", "X-SSL-Client-DN": "cert-host"},
+            {"X-SSL-Client-Verify": "FAILED:x", "X-SSL-Client-DN": "cert-host"},
+            {"SSL-Client-S-DN": "cert-host"},
         ):
-            # Use Client to properly handle WSGI
-            client = Client(receiver, Response)
-            response = client.post(
-                "/ingest",
-                data=body,
-                content_type="application/gzip",
-                headers={"X-Mina-Bundle-Digest": digest},
-            )
+            with self.subTest(headers=headers):
+                response = self.post("builtins:str", headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(self.stored(), ["nest"])
 
-            self.assertEqual(response.status_code, 201)
-            self.assertIn(b"cert-host/", response.data)
-            self.assertTrue(
-                (self.nest / "cert-host" / BUNDLE / "session.json").is_file()
-            )
-            # Verify tarball hostname was ignored
-            self.assertFalse((self.nest / "host1").exists())
+    def test_mapper_configured_but_no_certificate_is_refused(self) -> None:
+        # Never fall back to the tarball's hostname when a mapper is set.
+        response = self.post("builtins:str", {})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.stored(), ["nest"])
+
+    def test_unsafe_mapped_hostname_is_an_error_and_writes_nothing(self) -> None:
+        for dn in ("../escape", "a/b", ".hidden", "..", "-x", "x" * 254, "a b"):
+            with self.subTest(dn=dn):
+                response = self.post(
+                    "builtins:str",
+                    {"X-SSL-Client-Verify": "SUCCESS", "X-SSL-Client-DN": dn},
+                )
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(self.stored(), ["nest"])
+
+    def test_unmapped_certificate_is_refused(self) -> None:
+        receiver = create_app(self.nest, mapper=lambda dn: None)
+        body = archive()
+        response = Client(receiver, Response).post(
+            "/ingest",
+            data=body,
+            content_type="application/gzip",
+            headers={
+                "X-Mina-Bundle-Digest": "sha256=" + hashlib.sha256(body).hexdigest(),
+                "X-SSL-Client-Verify": "SUCCESS",
+                "X-SSL-Client-DN": "CN=unknown",
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.stored(), ["nest"])
+
+    def test_failing_mapper_is_an_error_not_a_fallback(self) -> None:
+        def broken(dn: str) -> str:
+            raise RuntimeError("directory unreachable")
+
+        receiver = create_app(self.nest, mapper=broken)
+        body = archive()
+        response = Client(receiver, Response).post(
+            "/ingest",
+            data=body,
+            content_type="application/gzip",
+            headers={
+                "X-Mina-Bundle-Digest": "sha256=" + hashlib.sha256(body).hexdigest(),
+                "X-SSL-Client-Verify": "SUCCESS",
+                "X-SSL-Client-DN": "CN=web-01",
+            },
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(self.stored(), ["nest"])
+
+    def test_bad_mapper_setting_fails_at_startup(self) -> None:
+        for spec in ("no-colon", "no_such_module_for_mina:f", "os:sep"):
+            with self.subTest(spec=spec):
+                env = {"MINA_NEST_DIR": str(self.nest), "MINA_IDENTITY_MAPPER": spec}
+                with (
+                    mock.patch.dict(os.environ, env),
+                    self.assertRaises((ValueError, ImportError)),
+                ):
+                    app_from_env()
 
 
 if __name__ == "__main__":
