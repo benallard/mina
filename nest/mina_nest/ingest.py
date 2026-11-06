@@ -36,6 +36,10 @@ class InvalidBundle(Exception):
     """The request body is not a valid Mina bundle archive."""
 
 
+class BundleTooLarge(InvalidBundle):
+    """The archive is over a size or entry limit (413, not malformed)."""
+
+
 class BoundedReader:
     """
     Limit bytes decompressed from gzip and the size of individual reads.
@@ -68,7 +72,7 @@ class BoundedReader:
         # But we also need to respect MAX_MEMBER_READ
         available = limit - total
         if available <= 0:
-            raise InvalidBundle("expanded archive exceeds the configured limit")
+            raise BundleTooLarge("expanded archive exceeds the configured limit")
 
         read_size = size if size < available else available
 
@@ -77,7 +81,7 @@ class BoundedReader:
         new_total = total + len(data)
 
         if new_total > limit:
-            raise InvalidBundle("expanded archive exceeds the configured limit")
+            raise BundleTooLarge("expanded archive exceeds the configured limit")
 
         self.total = new_total
         return data
@@ -122,7 +126,13 @@ def _read_member(source: BinaryIO, destination: Path, size: int) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True, mode=DEFAULT_DIR_MODE)
 
     # Use low-level file descriptor for better performance
-    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, DEFAULT_FILE_MODE)
+    # O_EXCL already refuses an existing name, symlinks included; O_NOFOLLOW
+    # says so explicitly, should a link ever get here.
+    fd = os.open(
+        destination,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        DEFAULT_FILE_MODE,
+    )
     try:
         with os.fdopen(fd, "wb") as output:
             # Use shutil.copyfileobj for better performance
@@ -201,7 +211,7 @@ def extract_archive(
             for member in archive:
                 entry_count += 1
                 if entry_count > max_entries:
-                    raise InvalidBundle("archive has too many entries")
+                    raise BundleTooLarge("archive has too many entries")
 
                 # Validate and get path parts
                 parts = _member_parts(member)
@@ -295,12 +305,12 @@ def extract_archive(
                     seen[relative] = True
                 elif member.isfile():
                     if member.size < 0 or member.size > max_expanded_bytes:
-                        raise InvalidBundle(
+                        raise BundleTooLarge(
                             "archive member exceeds the configured limit"
                         )
                     file_bytes += member.size
                     if file_bytes > max_expanded_bytes:
-                        raise InvalidBundle(
+                        raise BundleTooLarge(
                             "expanded archive exceeds the configured limit"
                         )
                     source = archive.extractfile(member)

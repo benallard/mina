@@ -33,6 +33,7 @@ from mina_nest.identity import (
     mapper_from_env,
 )
 from mina_nest.ingest import (
+    BundleTooLarge,
     InvalidBundle,
     ensure_host_directory,
     extract_archive,
@@ -68,6 +69,8 @@ class MinaReceiver:
             response = self.handle(request)
         except RequestEntityTooLarge:
             response = Response("upload exceeds the configured limit\n", status=413)
+        except BundleTooLarge as error:
+            response = Response(f"bundle too large: {error}\n", status=413)
         except InvalidBundle as error:
             response = Response(f"invalid bundle: {error}\n", status=400)
         except Exception:

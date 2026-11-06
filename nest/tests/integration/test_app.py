@@ -148,6 +148,38 @@ class ReceiverTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 413)
 
+    def post_to(self, app, body: bytes):
+        return Client(app, Response).post(
+            "/ingest",
+            data=body,
+            content_type="application/gzip",
+            headers={
+                "X-Mina-Bundle-Digest": "sha256=" + hashlib.sha256(body).hexdigest()
+            },
+        )
+
+    def test_expanded_size_limit_is_413(self) -> None:
+        # Small compressed, large unpacked: too large, not malformed.
+        body = archive(extra=(f"host1/{BUNDLE}/files/big", b"\0" * 8192))
+        app = create_app(self.nest, max_expanded_bytes=4096)
+
+        response = self.post_to(app, body)
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            [p.name for p in self.nest.iterdir() if not p.name.startswith(".")], []
+        )
+
+    def test_entry_limit_is_413(self) -> None:
+        body = archive()
+        with mock.patch("mina_nest.ingest.MAX_ARCHIVE_ENTRIES", 3):
+            response = self.post_to(create_app(self.nest), body)
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            [p.name for p in self.nest.iterdir() if not p.name.startswith(".")], []
+        )
+
     def test_rejects_wrong_method_and_content_type(self) -> None:
         self.assertEqual(self.client.get("/ingest").status_code, 405)
         response = self.client.post("/ingest", data=b"not gzip")
