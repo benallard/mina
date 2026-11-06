@@ -20,6 +20,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `nest/examples/` has the systemd socket and service units and an nginx
   site.
 
+### Removed
+
+- **`mina-nest` Rust stub** — `src/nest.rs` only printed "not yet
+  implemented"; the nest is the Python app in `nest/`. Releases no
+  longer ship a `mina-nest-linux-x86_64` binary.
+
 ### Fixed
 
 - **Redirections are not taken for file paths** — a token containing `<`

@@ -325,7 +325,6 @@ Mina is written in Rust. The codebase is intentionally small — the goal is a t
 mina/
 └── src/
     ├── main.rs          # CLI entrypoint + install helpers
-    ├── nest.rs          # mina-nest binary: HTTPS ingest endpoint
     ├── pam_hook.rs      # PAM session open/close handlers
     ├── command_log.rs   # Shell hook + auditd sources, source choice
     ├── command_log/

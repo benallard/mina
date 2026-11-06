@@ -94,9 +94,6 @@ nest/                    # The nest server — see nest/AGENTS.md
 tools/                   # Python analysis/query tools (not part of core)
 ```
 
-`src/nest.rs` (a stub `mina-nest` binary) is a leftover; it goes away
-when `nest/` is implemented (`docs/design/nest.md`).
-
 ### Module responsibilities — strictly observed
 
 | Module | Does | Does not |
