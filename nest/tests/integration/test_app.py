@@ -75,6 +75,38 @@ class ReceiverTests(unittest.TestCase):
             "sha256=" + hashlib.sha256(body).hexdigest(),
         )
 
+    def test_bundle_is_on_disk_before_the_answer(self) -> None:
+        # On 2xx the agent deletes its copy, so everything the bundle needs
+        # must be fsynced first: its files and directories before the
+        # rename publishes it, the host directory after, and the nest
+        # directory once a new host directory appears in it.
+        events: list[tuple[str, ...]] = []
+        real_fsync, real_rename = os.fsync, os.rename
+
+        def fsync(fd: int) -> None:
+            events.append(("fsync", os.readlink(f"/proc/self/fd/{fd}")))
+            real_fsync(fd)
+
+        def rename(source, destination) -> None:
+            real_rename(source, destination)
+            events.append(("rename", str(source), str(destination)))
+
+        with mock.patch("os.fsync", fsync), mock.patch("os.rename", rename):
+            response = self.post(archive(extra=(f"host1/{BUNDLE}/files/f", b"x\n")))
+
+        self.assertEqual(response.status_code, 201)
+        nest = self.nest.resolve()
+        bundle = nest / "host1" / BUNDLE
+        [publish] = [e for e in events if e[0] == "rename" and e[2] == str(bundle)]
+        at = events.index(publish)
+        staged = Path(publish[1])
+        synced_before = {e[1] for e in events[:at] if e[0] == "fsync"}
+        for path in [bundle, *bundle.rglob("*")]:
+            with self.subTest(path=path):
+                self.assertIn(str(staged / path.relative_to(bundle)), synced_before)
+        self.assertIn(("fsync", str(nest / "host1")), events[at:])
+        self.assertIn(("fsync", str(nest)), events)
+
     def test_bundle_without_captured_files_is_accepted(self) -> None:
         # The agent creates files/ only when it captured a file, which most
         # sessions do not.

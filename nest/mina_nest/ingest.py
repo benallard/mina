@@ -158,6 +158,19 @@ def _read_member(source: BinaryIO, destination: Path, size: int) -> None:
         raise
 
 
+def _fsync_directory(path: Path) -> None:
+    """Make the entries of directory `path` durable."""
+    _fsync_path(path, os.O_RDONLY | os.O_DIRECTORY)
+
+
+def _fsync_path(path: Path, flags: int = os.O_RDONLY) -> None:
+    descriptor = os.open(path, flags | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _cleanup_extracted(paths: list[Path]) -> None:
     """Remove all extracted files and directories on failure."""
     for path in reversed(paths):
@@ -355,6 +368,16 @@ def extract_archive(
         _cleanup_extracted(extracted_paths)
         raise
 
+    # Put the whole tree on disk before publish_bundle makes it visible: file
+    # contents, then directory entries. Only now, after validation, so a
+    # refused upload costs no fsync at all.
+    for path in extracted_paths:
+        if not path.is_dir():
+            _fsync_path(path)
+    for path in extracted_paths:
+        if path.is_dir():
+            _fsync_directory(path)
+
     # All validation passed, no need for cleanup list anymore
     extracted_paths.clear()
     return hostname, bundle_name
@@ -363,6 +386,7 @@ def extract_archive(
 def ensure_host_directory(path: Path) -> None:
     try:
         path.mkdir(mode=DEFAULT_DIR_MODE)
+        _fsync_directory(path.parent)
     except FileExistsError:
         mode = path.lstat().st_mode
         if not stat.S_ISDIR(mode):
@@ -424,5 +448,8 @@ def publish_bundle(
 
             os.rename(bundle_directory, destination)
             _write_digest_marker(marker, digest)
+            # The rename and the marker are entries of the host directory;
+            # only once they are on disk may the agent drop its copy.
+            _fsync_directory(host_directory)
             return name, False
         raise OSError(f"no free bundle name for {bundle_name} in {host_directory}")
