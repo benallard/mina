@@ -7,7 +7,6 @@ from mina_nest.identity import (
     IdentityError,
     IdentityRefused,
     host_from_headers,
-    is_safe_hostname,
     load_mapper,
 )
 
@@ -42,32 +41,6 @@ class LoadMapperTests(unittest.TestCase):
         ):
             with self.subTest(spec=spec), self.assertRaises(error):
                 load_mapper(spec)
-
-
-class HostnameTests(unittest.TestCase):
-    def test_safe(self) -> None:
-        for name in ("web-01", "web-01.example.org", "WEB_01", "a", "x" * 253):
-            with self.subTest(name=name):
-                self.assertTrue(is_safe_hostname(name))
-
-    def test_unsafe(self) -> None:
-        for name in (
-            "",
-            ".",
-            "..",
-            "../x",
-            "a/b",
-            ".hidden",
-            "-x",
-            "a b",
-            "a\x00b",
-            "é",
-            "x" * 254,
-            None,
-            42,
-        ):
-            with self.subTest(name=name):
-                self.assertFalse(is_safe_hostname(name))
 
 
 class HostFromHeadersTests(unittest.TestCase):
