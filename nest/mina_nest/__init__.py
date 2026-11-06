@@ -26,7 +26,12 @@ from mina_nest.config import (
     get_nest_dir,
     get_port,
 )
-from mina_nest.identity import get_hostname
+from mina_nest.identity import (
+    HostMapper,
+    IdentityRefused,
+    host_from_headers,
+    mapper_from_env,
+)
 from mina_nest.ingest import (
     InvalidBundle,
     ensure_host_directory,
@@ -46,6 +51,7 @@ class MinaReceiver:
         *,
         max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
         max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+        mapper: HostMapper | None = None,
     ) -> None:
         if max_upload_bytes <= 0 or max_expanded_bytes <= 0:
             raise ValueError("upload limits must be positive")
@@ -53,6 +59,8 @@ class MinaReceiver:
         self.nest_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         self.max_upload_bytes = max_upload_bytes
         self.max_expanded_bytes = max_expanded_bytes
+        # With a mapper, the host comes from the client certificate only.
+        self.mapper = mapper
 
     def __call__(self, environ: dict, start_response) -> list[bytes]:
         request = Request(environ)
@@ -89,6 +97,16 @@ class MinaReceiver:
                 f"{DIGEST_HEADER} must be sha256=<lowercase hex>\n", status=400
             )
 
+        # Decide who is uploading before reading the body. IdentityError (a
+        # broken mapper) becomes a 500, so the agent keeps the bundle.
+        cert_hostname = None
+        if self.mapper is not None:
+            try:
+                cert_hostname = host_from_headers(request.headers, self.mapper)
+            except IdentityRefused as error:
+                LOGGER.warning("refused upload from %s: %s", request.remote_addr, error)
+                return Response(f"{error}\n", status=403)
+
         request.max_content_length = self.max_upload_bytes
         body = request.get_data(cache=False)
 
@@ -99,9 +117,6 @@ class MinaReceiver:
         actual_digest = "sha256=" + hashlib.sha256(body).hexdigest()
         if not hmac.compare_digest(value, actual_digest):
             return Response("bundle digest does not match request body\n", status=400)
-
-        # Try to get hostname from client certificate (if configured)
-        cert_hostname = get_hostname(request)
 
         with tempfile.TemporaryDirectory(
             prefix=UPLOAD_TEMP_PREFIX, dir=self.nest_dir
@@ -131,6 +146,18 @@ class MinaReceiver:
                 actual_digest,
             )
 
+        if cert_hostname is None:
+            LOGGER.info("stored %s/%s identity=unauthenticated", hostname, name)
+        elif cert_hostname != tarball_hostname:
+            LOGGER.warning(
+                "stored %s/%s identity=client-cert (bundle reported hostname %s)",
+                hostname,
+                name,
+                tarball_hostname,
+            )
+        else:
+            LOGGER.info("stored %s/%s identity=client-cert", hostname, name)
+
         status = 200 if duplicate else 201
         return Response(f"{hostname}/{name}\n", status=status, mimetype="text/plain")
 
@@ -140,11 +167,13 @@ def create_app(
     *,
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+    mapper: HostMapper | None = None,
 ) -> MinaReceiver:
     return MinaReceiver(
         nest_dir,
         max_upload_bytes=max_upload_bytes,
         max_expanded_bytes=max_expanded_bytes,
+        mapper=mapper,
     )
 
 
@@ -154,9 +183,10 @@ def app_from_env() -> MinaReceiver:
     gunicorn 'mina_nest:app_from_env()'
 
     The nest directory is MINA_NEST_DIR (default /var/mina); the limits are
-    those of mina_nest.config.
+    those of mina_nest.config. MINA_IDENTITY_MAPPER, if set, names the
+    client certificate mapper; a bad value fails here, at startup.
     """
-    return create_app(get_nest_dir())
+    return create_app(get_nest_dir(), mapper=mapper_from_env())
 
 
 def _positive_integer(value: str) -> int:
@@ -204,5 +234,6 @@ def main() -> None:
         args.dir,
         max_upload_bytes=args.max_upload_mb * 1024 * 1024,
         max_expanded_bytes=args.max_expanded_mb * 1024 * 1024,
+        mapper=mapper_from_env(),
     )
     run_simple(args.host, args.port, application, threaded=True, use_reloader=False)

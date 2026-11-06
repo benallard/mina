@@ -1,218 +1,108 @@
-"""Unit tests for the identity module."""
+"""Tier 1: client certificate to host mapping, no filesystem."""
 
-import os
-import sys
-import tempfile
+import os.path
 import unittest
-from pathlib import Path
-from unittest import mock
 
-from werkzeug.wrappers import Request
+from mina_nest.identity import (
+    IdentityError,
+    IdentityRefused,
+    host_from_headers,
+    is_safe_hostname,
+    load_mapper,
+)
+
+VERIFIED = {"X-SSL-Client-Verify": "SUCCESS", "X-SSL-Client-DN": "CN=web-01,O=Fleet"}
 
 
-class IdentityMapperTests(unittest.TestCase):
-    """Tests for identity mapper loading and hostname extraction."""
+def cn(dn: str) -> str | None:
+    """A mapper of the kind a site writes: the CN, if any."""
+    for part in dn.split(","):
+        key, _, value = part.partition("=")
+        if key == "CN":
+            return value
+    return None
 
-    def test_no_mapper_configured_returns_none(self) -> None:
-        """When MINA_IDENTITY_MAPPER is not set, get_hostname returns None."""
-        with mock.patch.dict(os.environ, {}, clear=True):
-            # Force reimport without the env var
-            import importlib
 
-            import mina_nest.identity as identity_module
+class LoadMapperTests(unittest.TestCase):
+    def test_unset_means_no_mapper(self) -> None:
+        self.assertIsNone(load_mapper(None))
+        self.assertIsNone(load_mapper(""))
 
-            importlib.reload(identity_module)
-            from mina_nest.identity import get_hostname
+    def test_loads_module_function(self) -> None:
+        self.assertIs(load_mapper("os.path:basename"), os.path.basename)
 
-            environ = {}
-            request = Request(environ)
-            self.assertIsNone(get_hostname(request))
+    def test_bad_specs_raise(self) -> None:
+        for spec, error in (
+            ("no-colon", ValueError),
+            (":function", ValueError),
+            ("os.path:", ValueError),
+            ("os:sep", ValueError),  # not callable
+            ("os.path:no_such_function", ValueError),
+            ("no_such_module_for_mina:f", ImportError),
+        ):
+            with self.subTest(spec=spec), self.assertRaises(error):
+                load_mapper(spec)
 
-    def test_no_cert_in_request_returns_none(self) -> None:
-        """When no certificate DN is in the request, get_hostname returns None."""
-        with mock.patch.dict(os.environ, {"MINA_IDENTITY_MAPPER": "nonexistent:func"}):
-            import importlib
 
-            import mina_nest.identity as identity_module
+class HostnameTests(unittest.TestCase):
+    def test_safe(self) -> None:
+        for name in ("web-01", "web-01.example.org", "WEB_01", "a", "x" * 253):
+            with self.subTest(name=name):
+                self.assertTrue(is_safe_hostname(name))
 
-            importlib.reload(identity_module)
-            from mina_nest.identity import get_hostname
+    def test_unsafe(self) -> None:
+        for name in (
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            ".hidden",
+            "-x",
+            "a b",
+            "a\x00b",
+            "é",
+            "x" * 254,
+            None,
+            42,
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(is_safe_hostname(name))
 
-            environ = {"REQUEST_METHOD": "POST"}
-            request = Request(environ)
-            self.assertIsNone(get_hostname(request))
 
-    def test_mapper_loads_from_env(self) -> None:
-        """Mapper is loaded from MINA_IDENTITY_MAPPER environment variable."""
-        # Create a temporary module with a mapper function
-        mapper_code = """
-def my_mapper(dn):
-    return "mapped-host"
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(mapper_code)
-            mapper_path = f.name
+class HostFromHeadersTests(unittest.TestCase):
+    def test_maps_verified_dn(self) -> None:
+        self.assertEqual(host_from_headers(VERIFIED, cn), "web-01")
 
-        try:
-            # Add to path and set environment
-            module_name = Path(mapper_path).stem
-            sys.path.insert(0, str(Path(mapper_path).parent))
+    def test_requires_success(self) -> None:
+        for verify in (None, "NONE", "FAILED:certificate has expired", "success"):
+            headers = {"X-SSL-Client-DN": "CN=web-01"}
+            if verify is not None:
+                headers["X-SSL-Client-Verify"] = verify
+            with self.subTest(verify=verify), self.assertRaises(IdentityRefused):
+                host_from_headers(headers, cn)
 
-            env = {"MINA_IDENTITY_MAPPER": f"{module_name}:my_mapper"}
-            with mock.patch.dict(os.environ, env, clear=False):
-                import importlib
+    def test_requires_dn(self) -> None:
+        with self.assertRaises(IdentityRefused):
+            host_from_headers({"X-SSL-Client-Verify": "SUCCESS"}, cn)
 
-                import mina_nest.identity as identity_module
+    def test_unmapped_is_refused(self) -> None:
+        for result in (None, ""):
+            with self.subTest(result=result), self.assertRaises(IdentityRefused):
+                host_from_headers(VERIFIED, lambda dn, r=result: r)
 
-                importlib.reload(identity_module)
-                from mina_nest.identity import get_hostname
+    def test_unsafe_mapping_is_an_error(self) -> None:
+        for result in ("../escape", "a/b", ".mina-nest", 7):
+            with self.subTest(result=result), self.assertRaises(IdentityError):
+                host_from_headers(VERIFIED, lambda dn, r=result: r)
 
-                environ = {
-                    "REQUEST_METHOD": "POST",
-                    "SSL_CLIENT_S_DN": "CN=test.example.com",
-                }
-                request = Request(environ)
-                hostname = get_hostname(request)
-                self.assertEqual(hostname, "mapped-host")
+    def test_failing_mapper_is_an_error(self) -> None:
+        def broken(dn: str) -> str:
+            raise KeyError(dn)
 
-        finally:
-            if mapper_path in sys.path:
-                sys.path.remove(str(Path(mapper_path).parent))
-            os.unlink(mapper_path)
-
-    def test_ssl_client_s_dn_header(self) -> None:
-        """SSL_CLIENT_S_DN is read from request environment."""
-        mapper_code = """
-def my_mapper(dn):
-    return dn
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(mapper_code)
-            mapper_path = f.name
-
-        try:
-            module_name = Path(mapper_path).stem
-            sys.path.insert(0, str(Path(mapper_path).parent))
-
-            env = {"MINA_IDENTITY_MAPPER": f"{module_name}:my_mapper"}
-            with mock.patch.dict(os.environ, env, clear=False):
-                import importlib
-
-                import mina_nest.identity as identity_module
-
-                importlib.reload(identity_module)
-                from mina_nest.identity import get_hostname
-
-                dn = "CN=myhost.example.com,O=My Org"
-                environ = {"REQUEST_METHOD": "POST", "SSL_CLIENT_S_DN": dn}
-                request = Request(environ)
-                hostname = get_hostname(request)
-                self.assertEqual(hostname, dn)
-
-        finally:
-            if str(Path(mapper_path).parent) in sys.path:
-                sys.path.remove(str(Path(mapper_path).parent))
-            os.unlink(mapper_path)
-
-    def test_http_ssl_client_s_dn_fallback(self) -> None:
-        """HTTP_SSL_CLIENT_S_DN is used as fallback for proxied requests."""
-        mapper_code = """
-def my_mapper(dn):
-    return dn
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(mapper_code)
-            mapper_path = f.name
-
-        try:
-            module_name = Path(mapper_path).stem
-            sys.path.insert(0, str(Path(mapper_path).parent))
-
-            env = {"MINA_IDENTITY_MAPPER": f"{module_name}:my_mapper"}
-            with mock.patch.dict(os.environ, env, clear=False):
-                import importlib
-
-                import mina_nest.identity as identity_module
-
-                importlib.reload(identity_module)
-                from mina_nest.identity import get_hostname
-
-                dn = "CN=myhost.example.com"
-                environ = {"REQUEST_METHOD": "POST", "HTTP_SSL_CLIENT_S_DN": dn}
-                request = Request(environ)
-                hostname = get_hostname(request)
-                self.assertEqual(hostname, dn)
-
-        finally:
-            if str(Path(mapper_path).parent) in sys.path:
-                sys.path.remove(str(Path(mapper_path).parent))
-            os.unlink(mapper_path)
-
-    def test_mapper_error_returns_none(self) -> None:
-        """If mapper raises an exception, get_hostname returns None."""
-        mapper_code = """
-def broken_mapper(dn):
-    raise ValueError("mapper error")
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(mapper_code)
-            mapper_path = f.name
-
-        try:
-            module_name = Path(mapper_path).stem
-            sys.path.insert(0, str(Path(mapper_path).parent))
-
-            env = {"MINA_IDENTITY_MAPPER": f"{module_name}:broken_mapper"}
-            with mock.patch.dict(os.environ, env, clear=False):
-                import importlib
-
-                import mina_nest.identity as identity_module
-
-                importlib.reload(identity_module)
-                from mina_nest.identity import get_hostname
-
-                environ = {"REQUEST_METHOD": "POST", "SSL_CLIENT_S_DN": "CN=test"}
-                request = Request(environ)
-                hostname = get_hostname(request)
-                self.assertIsNone(hostname)
-
-        finally:
-            if str(Path(mapper_path).parent) in sys.path:
-                sys.path.remove(str(Path(mapper_path).parent))
-            os.unlink(mapper_path)
-
-    def test_empty_hostname_from_mapper_returns_none(self) -> None:
-        """If mapper returns empty string, get_hostname returns None."""
-        mapper_code = """
-def empty_mapper(dn):
-    return ""
-"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(mapper_code)
-            mapper_path = f.name
-
-        try:
-            module_name = Path(mapper_path).stem
-            sys.path.insert(0, str(Path(mapper_path).parent))
-
-            env = {"MINA_IDENTITY_MAPPER": f"{module_name}:empty_mapper"}
-            with mock.patch.dict(os.environ, env, clear=False):
-                import importlib
-
-                import mina_nest.identity as identity_module
-
-                importlib.reload(identity_module)
-                from mina_nest.identity import get_hostname
-
-                environ = {"REQUEST_METHOD": "POST", "SSL_CLIENT_S_DN": "CN=test"}
-                request = Request(environ)
-                hostname = get_hostname(request)
-                self.assertIsNone(hostname)
-
-        finally:
-            if str(Path(mapper_path).parent) in sys.path:
-                sys.path.remove(str(Path(mapper_path).parent))
-            os.unlink(mapper_path)
+        with self.assertRaises(IdentityError) as context:
+            host_from_headers(VERIFIED, broken)
+        self.assertIsInstance(context.exception.__cause__, KeyError)
 
 
 if __name__ == "__main__":

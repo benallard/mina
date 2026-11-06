@@ -1,106 +1,93 @@
 """Client certificate to host directory mapping for Mina Nest.
 
-This module provides the identity mapping functionality that allows the nest
-to determine the host directory from client certificates, overriding the
-hostname inside the bundle tarball when certificates are configured.
-
-The mapper is a pluggable Python callable, specified via the environment
-variable MINA_IDENTITY_MAPPER in the format 'module:function'. This keeps
+nginx verifies the client certificate and passes its verdict and the
+subject DN as request headers (see examples/nginx.conf). A site maps the
+DN to a host directory with its own Python callable, named in the
+environment variable MINA_IDENTITY_MAPPER as 'module:function'. This keeps
 all deployment-specific certificate handling out of Mina's core.
+
+With a mapper configured, every upload must carry a verified certificate
+that maps to a safe host name, or it is refused; the hostname inside the
+tarball is then ignored. Without a mapper, the nest uses the tarball's
+hostname and logs the bundle as unauthenticated. The two never mix.
 """
 
 from __future__ import annotations
 
 import importlib
-import logging
 import os
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 
-from werkzeug.wrappers import Request
+VERIFY_HEADER = "X-SSL-Client-Verify"
+"""nginx's $ssl_client_verify: SUCCESS, NONE or FAILED:<reason>."""
 
-LOGGER = logging.getLogger("mina.nest.identity")
+DN_HEADER = "X-SSL-Client-DN"
+"""nginx's $ssl_client_s_dn: the verified certificate's subject DN."""
 
-HostMapper = Callable[[str], str]
-"""Type for host mapper functions: takes a DN string, returns a hostname."""
+MAPPER_ENV = "MINA_IDENTITY_MAPPER"
 
-_mapper: HostMapper | None = None
+HostMapper = Callable[[str], str | None]
+"""Takes a subject DN, returns the host directory name, or None if unknown."""
+
+# One path component: letters, digits, '.', '-', '_'; not starting with
+# '.' or '-' (no '..', no hidden names next to the nest's own bookkeeping).
+_HOSTNAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,252}")
 
 
-def _load_mapper() -> HostMapper | None:
-    """Load the host mapper from MINA_IDENTITY_MAPPER environment variable.
+class IdentityRefused(Exception):
+    """The client has no verified certificate that maps to a host (403)."""
 
-    The value must be in the format 'module:callable', e.g. 'my_site.mapper:dn_to_host'.
-    Returns None if not configured or loading fails.
+
+class IdentityError(Exception):
+    """The mapper failed or returned an unusable name (500: retry later)."""
+
+
+def load_mapper(spec: str | None) -> HostMapper | None:
+    """Import the mapper named by `spec` ('module:function').
+
+    None or empty means no mapper. A spec that cannot be loaded raises, so a
+    misconfigured nest fails at startup instead of on the first upload.
     """
-    global _mapper
-    if _mapper is not None:
-        return _mapper
-
-    mapper_spec = os.environ.get("MINA_IDENTITY_MAPPER")
-    if mapper_spec is None:
+    if not spec:
         return None
-
-    try:
-        module_path, func_name = mapper_spec.rsplit(":", 1)
-    except ValueError:
-        LOGGER.error(
-            "MINA_IDENTITY_MAPPER must be in format 'module:function', got %s",
-            mapper_spec,
-        )
-        return None
-
-    try:
-        module = importlib.import_module(module_path)
-        mapper_func = getattr(module, func_name)
-        if not callable(mapper_func):
-            LOGGER.error("Mapper %s is not callable", mapper_spec)
-            return None
-        _mapper = mapper_func
-        return _mapper
-    except (ImportError, AttributeError) as error:
-        LOGGER.error("Failed to load mapper %s: %s", mapper_spec, error)
-        return None
+    module_path, _, name = spec.rpartition(":")
+    if not module_path or not name:
+        raise ValueError(f"{MAPPER_ENV} must be 'module:function', got {spec!r}")
+    mapper = getattr(importlib.import_module(module_path), name, None)
+    if not callable(mapper):
+        raise ValueError(f"{MAPPER_ENV} {spec!r} is not a callable")
+    return mapper
 
 
-def get_hostname(request: Request) -> str | None:
+def mapper_from_env() -> HostMapper | None:
+    """The mapper named in MINA_IDENTITY_MAPPER, if any."""
+    return load_mapper(os.environ.get(MAPPER_ENV))
+
+
+def is_safe_hostname(name: object) -> bool:
+    """True if `name` can be used as a host directory name."""
+    return isinstance(name, str) and _HOSTNAME_RE.fullmatch(name) is not None
+
+
+def host_from_headers(headers: Mapping[str, str], mapper: HostMapper) -> str:
+    """The host directory for a request, from nginx's certificate headers.
+
+    Raises IdentityRefused without a verified certificate or when the
+    mapper does not know it, and IdentityError when the mapper fails or
+    returns a name that is not safe as a directory name.
     """
-    Get the hostname from client certificate using the configured mapper.
-
-    Checks the request environment for the client certificate Distinguished
-    Name (typically set by nginx as SSL_CLIENT_S_DN or HTTP_SSL_CLIENT_S_DN).
-
-    Args:
-        request: The Werkzeug request object
-
-    Returns:
-        The mapped hostname if a mapper is configured and a valid certificate
-        DN is present, otherwise None.
-
-    Note:
-        When this returns a non-None value, the tarball's hostname should be
-        ignored per the design: "the host directory is what the certificate
-        maps to, and the hostname inside the tarball is ignored."
-    """
-    mapper = _load_mapper()
-    if mapper is None:
-        return None
-
-    # Nginx with ssl_verify_client sets SSL_CLIENT_S_DN in the environment
-    # When proxying via HTTP, it becomes HTTP_SSL_CLIENT_S_DN
-    dn = request.environ.get("SSL_CLIENT_S_DN")
-    if dn is None:
-        dn = request.environ.get("HTTP_SSL_CLIENT_S_DN")
-
-    if dn is None:
-        LOGGER.debug("No client certificate DN in request")
-        return None
-
+    if headers.get(VERIFY_HEADER) != "SUCCESS":
+        raise IdentityRefused("a verified client certificate is required")
+    dn = headers.get(DN_HEADER)
+    if not dn:
+        raise IdentityRefused("the client certificate has no subject")
     try:
-        hostname = mapper(dn)
-        if not hostname:
-            LOGGER.warning("Mapper returned empty hostname for DN '%s'", dn)
-            return None
-        return hostname
+        host = mapper(dn)
     except Exception as error:
-        LOGGER.warning("Host mapper failed for DN '%s': %s", dn, error)
-        return None
+        raise IdentityError(f"identity mapper failed for {dn!r}") from error
+    if host is None or host == "":
+        raise IdentityRefused(f"client certificate {dn!r} is not mapped to a host")
+    if not is_safe_hostname(host):
+        raise IdentityError(f"identity mapper returned an unsafe host name {host!r}")
+    return host

@@ -30,6 +30,38 @@ sudo systemctl enable --now mina-nest.socket
 systemd starts gunicorn on the first request. `systemctl reload mina-nest`
 restarts the workers without dropping uploads in progress.
 
+## Host identity from client certificates
+
+Without further setup, a bundle is filed under the hostname the machine
+reports inside it, and the nest logs it as `identity=unauthenticated`.
+
+If nginx verifies client certificates, the nest can file each bundle under
+the host the certificate belongs to instead. Write a function that turns a
+certificate subject DN (as nginx's `$ssl_client_s_dn` gives it) into a host
+directory name, or `None` for a certificate you do not recognise, and name
+it in `MINA_IDENTITY_MAPPER`:
+
+```python
+# site_mina/identity.py, anywhere on the nest's PYTHONPATH
+def host_from_dn(dn: str) -> str | None:
+    ...
+```
+
+```ini
+Environment=MINA_IDENTITY_MAPPER=site_mina.identity:host_from_dn
+```
+
+With a mapper set, every upload needs a certificate nginx verified
+(`X-SSL-Client-Verify: SUCCESS`); the hostname inside the bundle is ignored,
+and a mismatch is logged. No verified certificate, or `None` from the mapper,
+gets `403`. A mapper that raises, or returns something that is not a plain
+host name (letters, digits, `.`, `-`, `_`, not starting with `.` or `-`), gets
+`500`, so the machine keeps its bundle and retries later. A mapper that cannot
+be imported stops the nest at startup.
+
+The nest trusts these headers because nginx sets them on every request (see
+`examples/nginx.conf`) and only nginx can reach the socket. Keep both true.
+
 ## Try it locally
 
 ```sh

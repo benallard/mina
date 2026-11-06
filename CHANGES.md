@@ -19,6 +19,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `mina_nest:app_from_env()` builds the app from `MINA_NEST_DIR`, and
   `nest/examples/` has the systemd socket and service units and an nginx
   site.
+  With `MINA_IDENTITY_MAPPER` set, each bundle is filed under the host its
+  client certificate (verified by nginx) maps to; uploads without a
+  verified, mapped certificate are refused.
 
 ### Fixed
 

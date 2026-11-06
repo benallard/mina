@@ -17,6 +17,9 @@ Environment=PYTHONPATH=/opt/mina-nest
 # Optional limits, in bytes (see mina_nest/config.py):
 # Environment=MINA_DEFAULT_MAX_UPLOAD_BYTES=67108864
 # Environment=MINA_DEFAULT_MAX_EXPANDED_BYTES=536870912
+# Optional: map the client certificate (verified by nginx) to the host
+# directory with your own 'module:function' (see nest/README.md).
+# Environment=MINA_IDENTITY_MAPPER=site_mina.identity:host_from_dn
 # Sync workers, one request each. The timeout bounds a stuck upload.
 ExecStart=/usr/bin/gunicorn --workers 4 --timeout 120 'mina_nest:app_from_env()'
 ExecReload=/bin/kill -s HUP $MAINPID
