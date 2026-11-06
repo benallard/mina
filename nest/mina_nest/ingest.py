@@ -27,6 +27,7 @@ from mina_nest.config import (
     MAX_PATH_COMPONENT_LENGTH,
     REQUIRED_BUNDLE_FILES,
 )
+from mina_nest.names import is_bundle_name, is_safe_hostname
 
 LOGGER = logging.getLogger("mina.nest.archive")
 
@@ -223,6 +224,8 @@ def extract_archive(
                         raise InvalidBundle(
                             "archive must contain one hostname directory"
                         )
+                    if not is_safe_hostname(parts[0]):
+                        raise InvalidBundle("archive hostname is not a valid host name")
                     hostname = parts[0]
                 elif parts_len == 2:
                     if hostname is None:
@@ -233,6 +236,10 @@ def extract_archive(
                         raise InvalidBundle("archive must contain one bundle directory")
                     if not member.isdir():
                         raise InvalidBundle("archive must contain one bundle directory")
+                    if not is_bundle_name(parts[1]):
+                        raise InvalidBundle(
+                            "bundle name must be YYYY-MM-DD_HH-MM-SS_<user>"
+                        )
                     bundle_name = parts[1]
                 else:
                     # parts_len >= 3
@@ -273,6 +280,11 @@ def extract_archive(
                     parent = "/".join(parts[:-1])
                     if parent not in seen or not seen[parent]:
                         raise InvalidBundle("archive is missing a parent directory")
+
+                # tarfile counts GNU sparse members as regular files; the
+                # agent never writes them.
+                if member.type == tarfile.GNUTYPE_SPARSE or member.issparse():
+                    raise InvalidBundle("archive contains a sparse file")
 
                 destination = temporary_root.joinpath(*parts)
                 if member.isdir():
