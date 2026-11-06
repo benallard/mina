@@ -1,14 +1,18 @@
 # The nest (HTTPS receiver) — design
 
-Date: 2026-11-03
-Status: **draft**, for review. Nothing implemented yet.
+Date: 2026-11-03, updated 2026-11-06 to what was built
+Status: **approved and mostly implemented** (`nest/`, PRs #17–#26).
+Still planned: the `.mina-nest/` state directory with receipts (see
+"State directory") and the Tier 3 runbook. Where the code went another
+way than the first draft (environment instead of `nest.toml`, the mapper
+hook as the only identity mapping), this document follows the code.
 
 ## Intent
 
 The agent's HTTPS transport is done (`docs/design/https-transport.md`).
-What receives its POSTs is still `src/nest.rs`, a stub that prints "not
-yet implemented". Until now, operators had to write their own receiver
-against the wire contract.
+When this design was written, what received its POSTs was `src/nest.rs`,
+a stub that printed "not yet implemented" (removed in #23), and
+operators had to write their own receiver against the wire contract.
 
 This design makes the receiver real: a small Python WSGI app that takes
 one bundle per request, checks it, and puts it into the nest directory
@@ -44,6 +48,8 @@ Python, Werkzeug, gunicorn and nginx, all packaged by Debian.
   that; the nest reads its verdict from request headers.
 - Querying, indexing, searching, listing or serving bundles back. The
   nest only writes. Reading is `ls`, `grep`, `diff` and `tools/`.
+- Health or metrics endpoints. A check that the nest works is a test
+  upload; counters per gunicorn worker would mislead anyway.
 - Retention, rotation, compression of old bundles. `find -mtime` and
   cron, or logrotate-style tooling, outside the nest.
 - Re-checking bundle content (UTF-8, size of captured files). The agent
@@ -69,8 +75,8 @@ Python, Werkzeug, gunicorn and nginx, all packaged by Debian.
   host directory.
 - Anything deployment-specific in upstream code, defaults or docs: CA
   names, certificate subject formats, host naming schemes, paths of a
-  particular organisation. Those live in the operator's config or in a
-  private hook module.
+  particular organisation. Those live in the operator's configuration or
+  in a private hook module.
 - A database, an index file the nest depends on, or a daemon besides the
   WSGI workers.
 - Growing into a web application: no HTML, no UI, no second endpoint
@@ -82,15 +88,16 @@ From the root `AGENTS.md` (repo-wide):
 
 - No database. The nest is a directory tree; the layout is the shared
   contract between agent, nest and every tool that reads it.
-- No new ports: nginx on 443. gunicorn listens on a Unix socket (or
-  loopback), never on a port the fleet reaches.
+- No new ports: nginx on 443. gunicorn listens on a Unix socket, never
+  on a port the fleet reaches.
 - Atomic from the nest's perspective: no partial bundle ever appears.
 
-From `nest/AGENTS.md` (new, see that file):
+From `nest/AGENTS.md`:
 
 - Python 3.13 (Debian 13 trixie). Runtime dependencies: the standard
-  library and Werkzeug (trixie: `python3-werkzeug` 3.1) — only its
-  `Request`, `Response`, `exceptions` and `test` modules. No Flask, no
+  library and Werkzeug (trixie: `python3-werkzeug` 3.1) — its `Request`,
+  `Response`, `exceptions` and `test` modules, plus `serving` for the
+  development server behind `python -m mina_nest`. No Flask, no
   async, no ORM. gunicorn runs the app but is never imported by it.
 - No multipart: the stdlib `cgi` module is gone in 3.13, and the body
   is raw `application/gzip` per the contract anyway.
@@ -106,19 +113,23 @@ As fixed by the agent's design, with the nest's answers:
 
 | Request | Nest answer |
 |---|---|
+| Path other than `/ingest` | `404` |
 | Method other than `POST` | `405` |
-| No `Content-Length` | `411` |
-| `Content-Length` above `max_upload_bytes` | `413` (Werkzeug `max_content_length`) |
 | `Content-Type` not `application/gzip` | `415` |
+| No `Content-Length` | `411` |
+| `Content-Length` above the upload limit | `413` |
 | No `X-Mina-Bundle-Digest`, or not `sha256=<64 hex>` | `400` |
+| Client certificate required but not verified, or not mapped to a host | `403` |
 | Body's SHA-256 differs from the header | `400` |
 | Not gzip, not tar, truncated, or not exactly one `{hostname}/{bundle}/` tree | `400` |
-| Hostile entry (see "Hostile input") | `400` |
+| Hostile entry or bad name (see "Hostile input") | `400` |
 | Unpacked size or entry count over the limits | `413` |
-| Client certificate required but not verified, or not mapped to a host | `403` |
 | New bundle stored | `201` |
 | Same name and digest already stored (resend) | `200` |
-| Nest-side failure (disk full, hook raised, misconfiguration) | `500` |
+| Nest-side failure (disk full, mapper raised or misbehaved) | `500` |
+
+The nest answers on `/ingest`; the agent's `https_endpoint` can be any
+URL, and nginx maps it (`examples/nginx.conf` uses `location = /ingest`).
 
 Every non-2xx keeps the bundle in the agent's staging directory, so a
 nest-side failure costs nothing but a later manual reship. The response
@@ -138,87 +149,72 @@ a Mina agent.
 ```
 nest/
 ├── AGENTS.md
+├── README.md
 ├── pyproject.toml
 ├── mina_nest/
-│   ├── __init__.py     # make_app(config) -> WSGI app; app_from_env()
-│   ├── config.py       # nest.toml → Config (tomllib), checked at startup
-│   ├── ingest.py       # digest check, safe unpack, atomic publish, receipts
+│   ├── __init__.py     # MinaReceiver, create_app(), app_from_env(), main()
+│   ├── __main__.py     # python -m mina_nest: Werkzeug development server
+│   ├── config.py       # settings from the environment
+│   ├── ingest.py       # safe unpack, atomic publish, resend markers
+│   ├── names.py        # host and bundle directory names, one rule each
 │   └── identity.py     # verified client cert → host directory name
 ├── tests/
 │   ├── unit/           # Tier 1
 │   └── integration/    # Tier 2
 └── examples/
-    ├── nest.toml       # commented config
-    ├── nginx.conf      # site snippet: TLS, mTLS, headers, body size
-    └── mina-nest.service
+    ├── mina-nest.socket   # /run/mina-nest.sock, only nginx's user may connect
+    ├── mina-nest.service  # gunicorn as mina-nest, environment, sandboxing
+    └── nginx.conf         # site: TLS, optional mTLS, headers, body size
 ```
 
-`make_app(config)` returns a plain WSGI callable: one function that
-builds a Werkzeug `Request`, dispatches on method and path, and returns
-a `Response` or raises from `werkzeug.exceptions`. No routing library;
-there is one endpoint. `app_from_env()` reads the config file named by
-`MINA_NEST_CONFIG` (default `/etc/mina/nest.toml`) and calls `make_app`;
-gunicorn runs it as `gunicorn 'mina_nest:app_from_env()'`. Everything
-that can be wrong in the config (nest dir missing, regex without a
-`host` group, hook not importable, state dir on another filesystem)
-fails at startup, not on the first request.
+`create_app(nest_dir, *, max_upload_bytes, max_expanded_bytes, mapper)`
+returns a plain WSGI callable that builds a Werkzeug `Request`, checks
+path and method, and returns a `Response`. No routing library; there is
+one endpoint. `app_from_env()` builds it from the environment (next
+section); gunicorn runs it as `gunicorn 'mina_nest:app_from_env()'`.
+`python -m mina_nest` runs the same app on Werkzeug's development server
+for trying the nest out; it is not for production.
 
 ### Configuration
 
-TOML, read with `tomllib`. Same format as the agent's `mina.toml`, a
-separate file because it lives on another machine.
+Environment variables, read when the app is built, so a bad value stops
+gunicorn at startup instead of failing on the first upload. The service
+unit sets them (`Environment=`); there is no configuration file.
 
-```toml
-[nest]
-dir = "/var/mina"
+| Variable | Default | Meaning |
+|---|---|---|
+| `MINA_NEST_DIR` | `/var/mina` | The nest directory |
+| `MINA_IDENTITY_MAPPER` | unset | `module:function` mapping a certificate DN to a host (see "Identity") |
+| `MINA_DEFAULT_MAX_UPLOAD_BYTES` | 64 MiB | Compressed body; nginx `client_max_body_size` must allow it |
+| `MINA_DEFAULT_MAX_EXPANDED_BYTES` | 512 MiB | Sum of unpacked file sizes |
+| `MINA_MAX_ARCHIVE_ENTRIES` | 100000 | Entries per archive |
+| `MINA_HOST`, `MINA_PORT` | `127.0.0.1`, `8080` | `python -m mina_nest` only |
 
-[limits]
-max_upload_bytes   = 67108864    # compressed body; nginx client_max_body_size ≥ this
-max_unpacked_bytes = 268435456   # sum of entry sizes
-max_entries        = 10000
-
-[identity]
-# "client-cert": host directory from the certificate nginx verified.
-# "self-reported": host directory from the tarball; logged as unauthenticated.
-source = "client-cert"
-
-# Headers nginx sets; the defaults match examples/nginx.conf.
-verify_header = "X-SSL-Client-Verify"
-dn_header     = "X-SSL-Client-DN"
-# cert_header = "X-SSL-Client-Cert"   # optional: URL-escaped PEM, for hooks
-
-# Exactly one of these when source = "client-cert":
-dn_regex = '(?:^|,)CN=(?P<host>[^,]+)'
-# mapper = "example_site.mina:host_from_cert"
-```
-
-Limits are the builder's to tune; the numbers above are a starting
-point sized for bundles of a few hundred captured text files.
-
-There is no default for `dn_regex` or `mapper`. Which part of a
-certificate names a machine is policy, and a guessed default would be
-exactly the deployment-specific assumption the anti-goals forbid.
+The first draft had a `nest.toml`. Environment variables won because
+the nest has a handful of settings, all set in one place (the unit),
+and a second file format on the nest machine buys nothing.
 
 ### Request handling
 
 For one `POST`:
 
-1. **Check headers.** Method, `Content-Length`, `Content-Type`, digest
-   header format. Werkzeug's `max_content_length` gives `413` before the
-   body is read.
-2. **Identity.** Decide where the bundle may go (see "Identity"); `403`
-   here, before reading the body, if the certificate is missing or
-   unmapped.
-3. **Spool and hash.** Copy the body to a temporary file in the state
-   directory while hashing it. Compare with `X-Mina-Bundle-Digest`. An
-   unverified body is never unpacked.
-4. **Unpack** into a fresh directory under `{state}/tmp/` (see "Hostile
-   input"), counting entries and bytes as it goes.
+1. **Check headers.** Path, method, `Content-Type`, `Content-Length`
+   against the upload limit, digest header format.
+2. **Identity.** With a mapper, decide the host from the certificate
+   headers (see "Identity"); `403` here, before reading the body, if
+   the certificate is missing or unmapped.
+3. **Read and hash.** Read the body (bounded by the upload limit) and
+   compare its SHA-256 with `X-Mina-Bundle-Digest`. An unverified body
+   is never unpacked. The body is held in memory: with the default
+   limit and 4 workers that is at most 256 MiB; spooling to a file can
+   come if bundles grow.
+4. **Unpack** into a fresh `.mina-upload-*` directory in the nest (see
+   "Hostile input"), counting entries and bytes as it goes, then fsync
+   the unpacked files and directories.
 5. **Publish** under the lock (see "Atomic publish and resends").
 6. **Answer** `201` or `200`, after the data is on disk.
 
-The spool file and the unpack directory are removed on every exit
-path, success or failure.
+The unpack directory is removed on every exit path, success or failure.
 
 ### Hostile input
 
@@ -229,58 +225,58 @@ The unpacker reads the tarball with `tarfile` member by member and never
 calls `extractall`. For each member, before anything is written:
 
 - Type is a regular file or a directory. Symlinks, hardlinks, character
-  and block devices, FIFOs, sparse and other GNU special entries → `400`.
-- The name splits on `/` into non-empty components, none of them `.` or
-  `..`, no leading `/`, valid UTF-8. Anything else → `400`.
+  and block devices, FIFOs and GNU sparse entries → `400`.
+- The name splits on `/` into non-empty, printable components, none of
+  them `.` or `..`, no leading `/`, no `\`. Anything else → `400`.
 - The first component is the hostname, the second the bundle name.
   Every member shares the same first two components; the only members
   with fewer are the `{hostname}` and `{hostname}/{bundle}` directory
   entries themselves. A second hostname, a second bundle, or a file at
   either of the two top levels → `400`.
-- The hostname is a single safe path component: 1–253 bytes, letters,
-  digits, `.`, `-`, `_`, not starting with `.` or `-`. The bundle name
-  matches `YYYY-MM-DD_HH-MM-SS_` followed by a safe component (the user
-  part may contain `_`, and an agent-side `_2` suffix is just part of
-  it).
-- Running totals of entries and declared sizes stay under the limits →
-  `413` otherwise. Declared size is what `tarfile` reads, so this also
-  bounds a gzip bomb.
+- Inside the bundle: `session.json` and `commands.log` as regular files
+  (required), `files/` as a directory (optional: the agent omits it when
+  it captured nothing), and nothing else at that level.
+- The hostname follows `names.is_safe_hostname`: 1–253 characters,
+  letters, digits, `.`, `-`, `_`, not starting with `.` or `-`. The
+  bundle name follows `names.is_bundle_name`: `YYYY-MM-DD_HH-MM-SS_`
+  and a non-empty user part, which is not narrowed further (site user
+  names vary, and an agent-side `_2` suffix is part of it).
+- Running totals of entries and sizes stay under the limits → `413`
+  otherwise. The decompressed stream is bounded too, so a gzip bomb
+  stops at the limit.
 
 Writing: directories with `mkdir`, files with
-`os.open(…, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW)`, parents created
-as needed inside the unpack directory. Because nothing but plain files
-and directories is ever created there, no later member can be redirected
-through a link; `O_EXCL` turns a duplicate member into an error. Tar
-metadata (mode, owner, mtime) is ignored. Files and directories get
-fixed read-only modes, as the local transport does (exact modes and
-group: builder's call, documented in the README).
+`os.open(…, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW)`. Because nothing
+but plain files and directories is ever created there, no later member
+can be redirected through a link; `O_EXCL` turns a duplicate member into
+an error. Tar metadata (mode, owner, mtime) is ignored: files get
+`0640`, directories `0750`, owned by the nest's user.
 
 A failed member aborts the request; the partly filled unpack directory
-is removed. Nothing has touched the nest tree yet.
+is removed. Nothing has touched the nest's host directories yet.
 
 ### Identity
 
-Two modes, chosen in config.
+The mapper decides. Without `MINA_IDENTITY_MAPPER`, every bundle is
+filed under its self-reported hostname and logged as
+`identity=unauthenticated`; certificate headers are not looked at.
 
-**`source = "client-cert"`.** nginx verifies the client certificate
-against the operator's CA and passes `$ssl_client_verify` and
-`$ssl_client_s_dn` (and optionally `$ssl_client_escaped_cert`) as
-headers. The nest:
+With a mapper, nginx verifies the client certificate against the
+operator's CA and passes `$ssl_client_verify` and `$ssl_client_s_dn` as
+`X-SSL-Client-Verify` and `X-SSL-Client-DN`. The nest:
 
-1. Requires the verify header to be `SUCCESS`, else `403`.
-2. Maps the certificate to a host directory name:
-   - `dn_regex`: `re.search` on the DN; the named group `host` is the
-     answer. No match → `403`.
-   - `mapper`: a `module:function` path, imported once at startup and
-     called as `function(cert) -> str | None`, where `cert` carries `dn`
-     and `pem` (`None` unless `cert_header` is configured). `None` →
-     `403`. An exception → `500`: a broken hook must not lose bundles,
-     and `500` leaves them in the agent's staging.
-   The answer goes through the same hostname check as a self-reported
-   name; a mapping that yields an unsafe name is a configuration error →
-   `500`.
+1. Requires `X-SSL-Client-Verify: SUCCESS`, else `403`. A DN without
+   that verdict is never used.
+2. Calls the mapper, `function(dn: str) -> str | None`, imported once
+   when the app is built (an unloadable mapper stops the nest).
+   - `None` or `""` → `403`: a certificate the site does not know.
+   - An exception → `500`: a broken hook must not lose bundles, and
+     `500` leaves them in the agent's staging.
+   - Anything that is not a safe host name (same rule as above) → `500`:
+     a configuration error, never a path.
 3. **Overrides** the tarball's hostname with the mapped one: the bundle
-   is stored under `{mapped}/{bundle}/` whatever the tarball says.
+   is stored under `{mapped}/{bundle}/` whatever the tarball says. There
+   is no fallback to the tarball's hostname when a mapper is set.
 
 Override rather than reject, because:
 
@@ -294,41 +290,39 @@ Override rather than reject, because:
   certificate can only ever write into the directory its certificate
   maps to.
 - Mina records and reports; it does not block (root `AGENTS.md`). A
-  mismatch is information, so the nest logs it as a warning and keeps
-  it in the receipt (`reported_hostname`), where an operator can find
-  it.
+  mismatch is information, so the nest logs it as a warning (and, once
+  receipts exist, keeps it in the receipt).
 
 `session.json` inside the bundle is not modified: it still holds what
 the machine said about itself. The nest never rewrites bundle content.
 
-**`source = "self-reported"`.** The tarball's hostname is used after the
-hostname check. Certificate headers are ignored, even if present. Every
-bundle is logged with `identity=unauthenticated`. This is for fleets
-without client certificates, and for trying the nest out.
-
 The nest trusts the certificate headers only because nginx sets them.
 That holds when nginx overwrites them on every request
-(`proxy_set_header` does) and gunicorn is reachable only from nginx (a
-Unix socket with restrictive permissions). Both are in
-`examples/nginx.conf` and in the README; the manual runbook checks a
-spoofed header.
+(`proxy_set_header` does, also without mTLS) and gunicorn is reachable
+only from nginx (the socket unit lets only nginx's user connect). Both
+are in `examples/` and the README; the manual runbook is to check a
+forged header.
 
 Organisation-specific mapping stays out of the repo: a site writes its
-own `mapper` module, installs it next to the nest (a site package, a
-config-management file), and names it in `nest.toml`. Upstream ships
-the hook mechanism and `dn_regex`, nothing more.
+own mapper module, puts it on the nest's `PYTHONPATH`, and names it in
+`MINA_IDENTITY_MAPPER`. The first draft also had a `dn_regex` setting
+for simple cases; it was dropped, since a three-line mapper does the
+same and keeps one mechanism.
 
 ### State directory
 
-The nest needs a little private state: a place to unpack on the same
-filesystem as the tree (so publishing is a `rename`), a lock, and the
-digest of each stored bundle (for resends). It keeps it in one hidden
-directory inside the nest:
+**Today:** the nest keeps its bookkeeping next to the bundles:
+`.mina-ingest.lock` and `.mina-upload-*` unpack directories in the nest
+directory, and a `.{bundle}.mina-digest` marker beside each bundle in
+its host directory. The markers are inside the host directories, which
+the root `AGENTS.md` layout rule forbids. This is to be replaced.
+
+**Planned:** one hidden directory inside the nest:
 
 ```
 /var/mina/
 ├── .mina-nest/
-│   ├── tmp/                          # spool files and unpack dirs
+│   ├── tmp/                          # unpack dirs
 │   ├── lock                          # flock for publishing
 │   └── receipts/{hostname}/{bundle}.json
 └── {hostname}/{YYYY-MM-DD_HH-MM-SS}_{user}/…   # unchanged
@@ -342,12 +336,12 @@ A receipt is small JSON, written once next to its bundle:
  "reported_hostname": "web-03", "remote_addr": "10.0.1.42"}
 ```
 
-Why here and in this form:
+Why there and in this form:
 
-- `{state}/tmp` inside the nest dir is on the nest's filesystem by
-  construction, so `rename` is atomic; startup checks `st_dev` anyway.
-- The documented layout is unchanged: `{hostname}` directories still
-  hold only bundles. A leading `.` keeps the state out of shell globs
+- `.mina-nest/tmp` inside the nest dir is on the nest's filesystem by
+  construction, so `rename` is atomic.
+- The documented layout is unchanged: `{hostname}` directories hold
+  only bundles. A leading `.` keeps the state out of shell globs
   (`/var/mina/*/…`), and a hostname may not start with `.`, so it can
   never clash with a host directory.
 - The digest cannot be recomputed from an unpacked bundle (it is the
@@ -359,53 +353,51 @@ Why here and in this form:
 - Bundles shipped by the SSH or local transport have no receipt; they
   are simply bundles whose digest the nest does not know.
 
+Moving to it needs a note for nests already running: either move the
+existing markers into receipts, or accept that resends of older bundles
+are stored again as `_2`.
+
 ### Atomic publish and resends
 
-After a successful unpack, with `{state}/lock` held (`fcntl.flock`, one
-lock for the whole nest; unpacking happens outside it, publishing takes
-milliseconds):
+After a successful unpack, and after fsyncing the unpacked files and
+directories, with the lock held (`fcntl.flock`, one lock for the whole
+nest; unpacking happens outside it, publishing takes milliseconds):
 
 1. For `name`, `name_2`, `name_3`, … in `{nest}/{host}/`:
-   - exists and its receipt has the same digest → resend: drop the
+   - exists and its digest marker has the same digest → resend: drop the
      unpacked copy, answer `200` with that path;
-   - exists otherwise → next suffix;
-   - does not exist → this is the target.
-2. `fsync` the unpacked files, `rename` the unpack directory to the
-   target, `fsync` `{nest}/{host}/`.
-3. Write the receipt (temp file + `rename`), `fsync`.
-4. Release the lock, answer `201`.
+   - exists, or a marker for it exists → next suffix;
+   - otherwise → this is the target.
+2. `rename` the unpacked bundle to the target.
+3. Write the digest marker (temp file, fsync, `rename`).
+4. fsync `{nest}/{host}/`, release the lock, answer `201`. A host
+   directory created for this bundle was fsynced into the nest directory
+   before.
 
 Check-then-rename under the lock, as the local transport does
 (`fill_and_publish` in `src/transport/local.rs`), with the same cap on
 attempts. The lock makes concurrent gunicorn workers safe against each
 other, including two copies of the same resend arriving at once.
 
-A crash between step 2 and 3 leaves a bundle without a receipt. The
+A crash between steps 2 and 3 leaves a bundle without a marker. The
 bundle is complete; at worst a resend of it is stored again as `_2`.
 That is the right side to fail on: duplicates are visible and harmless,
-a missing bundle is neither. Leftovers in `{state}/tmp` after a crash
-are never visible as bundles and can be removed when no request runs
-(builder's call: at startup, or a tmpfiles rule).
+a missing bundle is neither. Leftover unpack directories after a crash
+are never visible as bundles and can be removed when no request runs.
+
+fsync happens only after validation, so a refused upload costs none.
 
 ### Logging
 
-One line per request to stderr (gunicorn → journald): outcome, status,
-host, stored name, digest, identity mode, DN or `unauthenticated`, and
-on mismatch the reported hostname. Failures say which check refused the
-upload. No bundle content in logs.
+To stderr (gunicorn → journald):
+- every stored bundle: `stored {host}/{name} identity=client-cert` or
+  `identity=unauthenticated`; a warning naming the reported hostname
+  when a certificate overrode it;
+- every refused identity: a warning with the client address and reason;
+- every `500`: the exception.
 
-### What goes away
-
-In the implementation step, not this one:
-
-- `src/nest.rs` and the `mina-nest` `[[bin]]` in `Cargo.toml`.
-- `--bin mina-nest` and the `mina-nest-linux-x86_64` artefacts in the
-  `publish-dev` and `publish-release` jobs of `.github/workflows/ci.yml`,
-  and the `mina-nest` row of the dev release notes.
-- The `mina-nest serve --port 8765` instructions in `README.md`; the
-  stub-receiver note and the throwaway Python receiver in section 8 of
-  `docs/manual-testing.md`; `src/nest.rs` in `CONTRIBUTING.md`; item 15
-  and step 10 in `STATUS.md`.
+Other `4xx` refusals are answered with their reason but not logged; the
+agent logs them on its side. No bundle content in logs.
 
 ## Packaging
 
@@ -415,56 +407,53 @@ One Debian source package can build both halves:
 - `mina-nest` — `Architecture: all`, built with pybuild on `nest/`
   (`--dir nest`, `pybuild-plugin-pyproject`). `Depends: python3,
   python3-werkzeug, gunicorn`; `Recommends: nginx` (any TLS-terminating
-  proxy that sets the headers works). Ships the systemd unit, a
-  `mina-nest` system user, `/etc/mina/nest.toml`, and the nginx snippet
-  as an example, not an enabled site.
+  proxy that sets the headers works). Ships the socket and service
+  units, a `mina-nest` system user, and the nginx site as an example,
+  not an enabled site. With the package, the units' `PYTHONPATH` line
+  goes away.
 
 `nest/pyproject.toml` uses a build backend trixie packages
-(setuptools), declares `werkzeug>=3.1` as its only dependency, and
+(setuptools), declares `werkzeug>=3.1,<4` as its only dependency, and
 `pytest` (and `ruff` for CI) as test/dev extras. The nest keeps its own
 version in `pyproject.toml`, released together with the agent's.
 
 The Debian packaging itself lives in the packaging repository, not here.
+Its `mina-nest` package still installs the removed Rust stub and has to
+move to the above.
 
 ## Testing
 
 Same three tiers as the agent (root `AGENTS.md`), in `nest/tests/`.
 
 **Tier 1** (`tests/unit/`, no filesystem): pure logic.
-- Member checks on `TarInfo` objects built in memory: every hostile
-  type and name above refused, good members accepted.
-- Hostname and bundle-name checks.
-- Identity: `dn_regex` matches and misses, `host` group required, hook
-  loading by dotted path, hook returning `None` or an unsafe name or
-  raising.
-- Config parsing: missing keys, both `dn_regex` and `mapper`, neither
-  with `client-cert`, bad limits.
-- Digest header parsing and comparison.
+- Path checks on archive member names.
+- Host and bundle name rules (`test_names.py`).
+- Identity: mapper loading by `module:function`, bad specs, the verify
+  header, unmapped and unsafe answers, a raising mapper.
 
-**Tier 2** (`tests/integration/`, a `tmp_path` nest): the full app
-through `werkzeug.test.Client`, with tarballs built in the test the way
-the agent builds them.
-- Good bundle → `201`, exactly the expected tree, nothing left in
-  `.mina-nest/tmp`, receipt written.
+**Tier 2** (`tests/integration/`, a temporary nest): extraction directly
+and the full app through `werkzeug.test.Client`, with tarballs built in
+the test the way the agent builds them.
+- Good bundle → `201`, exactly the expected tree; also without
+  `files/`.
+- Everything the bundle needs is fsynced before the rename publishes it,
+  and the host and nest directories after.
 - Resend of the same body → `200`, still one copy. Different body,
-  same name → `201` as `_2`; resend of that one → `200`.
-- Hostile tarballs: `..`, absolute path, symlink, hardlink, device,
-  FIFO, two hostnames, two bundles, file at host level, duplicate
-  member, hostname starting with `.`, too many entries, too many bytes,
-  a gzip bomb, not gzip, truncated gzip. Each → 4xx, and afterwards the
-  nest tree is exactly as before.
-- Header failures: wrong method, missing length, oversize body,
-  wrong type, missing/malformed/mismatching digest.
-- Identity: mapped host overrides the tarball's (receipt records the
-  reported one); verify header not `SUCCESS` → `403`; unmapped DN →
-  `403`; hook raising → `500`, nothing stored; self-reported mode
-  ignores certificate headers.
-- Failure in publish (e.g. host dir not writable) → `500`, no partial
-  bundle.
+  same name → `201` as `_2`.
+- Hostile tarballs: `..`, absolute path, symlink, hardlink, sparse
+  member, duplicate member, file outside the bundle, unsafe hostname,
+  non-agent bundle name, too many entries, too many bytes, a gzip bomb.
+  Each → 4xx, and nothing stored.
+- Header failures: wrong method, wrong type, oversize body, mismatching
+  digest.
+- Identity: mapped host overrides the tarball's; DN without a verified
+  certificate → `403`; mapper set and no certificate → `403`; unmapped →
+  `403`; unsafe mapped name or raising mapper → `500`, nothing written;
+  bad `MINA_IDENTITY_MAPPER` → fails at startup.
 
-**Tier 3** (`docs/manual-testing.md`, replacing the throwaway receiver
-in section 8): the packaged nest behind nginx with a test CA, gunicorn
-on a Unix socket.
+**Tier 3** (`docs/manual-testing.md`, to be written; section 8 still
+tests the agent against a throwaway receiver): the nest under gunicorn
+behind nginx with a test CA, as in `examples/`.
 - Real agent logout → bundle under the mapped host directory.
 - No client cert, cert from another CA → rejected by nginx; cert
   without a mapping → `403`; bundle kept in staging.
@@ -473,15 +462,15 @@ on a Unix socket.
 - `curl` replay of a saved tarball with its digest → `200`, no `_2`.
 - gunicorn not reachable except through nginx.
 
-**CI**: a second job in `.github/workflows/ci.yml` on stock
-`ubuntu-latest`, `working-directory: nest`: set up Python 3.13, install
-Werkzeug 3.1, pytest and ruff with pip, run `ruff check`,
-`ruff format --check`, `pytest`. No system packages, no nginx.
+**CI**: the `Nest (Python)` job in `.github/workflows/ci.yml` on stock
+`ubuntu-latest`, in `nest/`: Python 3.13, Werkzeug 3.1, pytest and a
+pinned ruff from pip; `ruff format --check`, `ruff check`, `pytest`. No
+system packages, no nginx.
 
-## Left to the builder
+## Open
 
-Exact limits and their defaults, config key names, file and directory
-modes of stored bundles, log line format, how `{state}/tmp` leftovers
-are cleaned, whether `cert_header` is worth shipping in the example
-nginx config, the ruff rule set, and the gunicorn worker count in the
-example unit.
+- The `.mina-nest/` state directory and receipts (above), with a
+  migration note.
+- The Tier 3 runbook section.
+- The `mina-nest` Debian package (packaging repository).
+- Spooling the body to a file instead of memory, if bundles grow.

@@ -53,7 +53,7 @@ If a feature needs any of these, it belongs in `tools/` or outside Mina.
    formats, host naming schemes or paths of any organisation in code,
    defaults, examples or tests. A site's certificate-to-host mapping is
    a private Python module named in `MINA_IDENTITY_MAPPER` (the `mapper`
-   hook), or a `dn_regex` in its own config.
+   hook).
 
 5. **The wire contract is the interface.** The nest accepts exactly
    what "Wire contract" in `docs/design/https-transport.md` describes.
@@ -63,7 +63,9 @@ If a feature needs any of these, it belongs in `tools/` or outside Mina.
 ## Stack
 
 - **Python 3.13** (Debian 13 trixie). Stdlib plus **Werkzeug 3.1**,
-  and of Werkzeug only `Request`, `Response`, `exceptions` and `test`.
+  and of Werkzeug only `Request`, `Response`, `exceptions` and `test`,
+  plus `serving` for the development server (`python -m mina_nest`),
+  which is never the production path.
 - **WSGI**, served by **gunicorn** (sync workers) on a Unix socket,
   behind **nginx** on 443. The app never imports gunicorn.
 - No Flask, no async, no ORM, no database, no multipart.
@@ -80,15 +82,16 @@ If a feature needs any of these, it belongs in `tools/` or outside Mina.
 nest/
 ├── pyproject.toml
 ├── mina_nest/
-│   ├── __init__.py     # make_app(config), app_from_env()
+│   ├── __init__.py     # create_app(), app_from_env(); HTTP → status codes
+│   ├── __main__.py     # python -m mina_nest: development server only
 │   ├── config.py       # environment-based settings
-│   ├── ingest.py       # digest, safe unpack, atomic publish, receipts
+│   ├── ingest.py       # safe unpack, fsync, atomic publish, resend markers
 │   ├── names.py        # host and bundle directory names, one rule each
 │   └── identity.py     # client cert → host directory; the mapper hook
 ├── tests/
 │   ├── unit/
 │   └── integration/
-└── examples/           # nginx snippet, systemd unit
+└── examples/           # systemd socket and service units, nginx site
 ```
 
 Keep the boundaries: `identity` knows nothing about tarballs, `ingest`
