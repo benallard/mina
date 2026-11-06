@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 import tarfile
 import tempfile
@@ -70,10 +71,74 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual((bundle / "commands.log").read_bytes(), b"echo one\n")
         self.assertEqual((bundle / "session.json").read_bytes(), b'{"user":"alice"}\n')
         self.assertTrue((bundle / "files").is_dir())
+
+    def test_bookkeeping_stays_in_mina_nest(self) -> None:
+        # The nest layout is a shared contract: host directories hold only
+        # bundles, and the nest's own state lives in .mina-nest/.
+        body = archive()
+        self.post(body)
+        self.post(body)  # resend
+        self.post(archive(command_log=b"echo two\n"))  # _2
+
         self.assertEqual(
-            (self.nest / "host1" / f".{BUNDLE}.mina-digest").read_text().strip(),
-            "sha256=" + hashlib.sha256(body).hexdigest(),
+            sorted(p.name for p in self.nest.iterdir()), [".mina-nest", "host1"]
         )
+        self.assertEqual(
+            sorted(p.name for p in (self.nest / "host1").iterdir()),
+            [BUNDLE, f"{BUNDLE}_2"],
+        )
+        self.assertEqual(list((self.nest / ".mina-nest" / "tmp").iterdir()), [])
+
+    def test_receipt_records_digest_and_sender(self) -> None:
+        body = archive()
+        response = self.client.post(
+            "/ingest",
+            data=body,
+            content_type="application/gzip",
+            headers={
+                "X-Mina-Bundle-Digest": "sha256=" + hashlib.sha256(body).hexdigest(),
+                "X-Forwarded-For": "10.0.1.42",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        receipt = json.loads(
+            (
+                self.nest / ".mina-nest" / "receipts" / "host1" / f"{BUNDLE}.json"
+            ).read_text()
+        )
+        received_at = receipt.pop("received_at")
+        self.assertRegex(received_at, r"\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
+        self.assertEqual(
+            receipt,
+            {
+                "digest": "sha256=" + hashlib.sha256(body).hexdigest(),
+                "identity": "unauthenticated",
+                "client_dn": None,
+                "reported_hostname": "host1",
+                "remote_addr": "10.0.1.42",
+            },
+        )
+
+    def test_receipt_without_bundle_keeps_its_name(self) -> None:
+        # A receipt whose bundle is gone (deleted by hand, say) still holds
+        # the name: never reuse a name the nest has handed out.
+        receipts = self.nest / ".mina-nest" / "receipts" / "host1"
+        receipts.mkdir(parents=True)
+        (receipts / f"{BUNDLE}.json").write_text('{"digest": "sha256=old"}')
+
+        response = self.post(archive())
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data, f"host1/{BUNDLE}_2\n".encode())
+
+    def test_state_directory_must_be_a_directory(self) -> None:
+        other = Path(self.temporary.name) / "other"
+        other.mkdir()
+        (other / ".mina-nest").write_text("not a directory")
+
+        with self.assertRaises(OSError):
+            create_app(other)
 
     def test_bundle_is_on_disk_before_the_answer(self) -> None:
         # On 2xx the agent deletes its copy, so everything the bundle needs
@@ -129,7 +194,7 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual(retry.status_code, 200)
         self.assertEqual(
             sorted(path.name for path in (self.nest / "host1").iterdir()),
-            [f".{BUNDLE}.mina-digest", BUNDLE],
+            [BUNDLE],
         )
 
     def test_different_digest_gets_collision_suffix(self) -> None:
@@ -299,6 +364,14 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(response.data, f"cert-host/{BUNDLE}\n".encode())
         self.assertTrue((self.nest / "cert-host" / BUNDLE / "session.json").is_file())
         self.assertFalse((self.nest / "host1").exists())
+        receipt = json.loads(
+            (
+                self.nest / ".mina-nest" / "receipts" / "cert-host" / f"{BUNDLE}.json"
+            ).read_text()
+        )
+        self.assertEqual(receipt["identity"], "client-cert")
+        self.assertEqual(receipt["client_dn"], "cert-host")
+        self.assertEqual(receipt["reported_hostname"], "host1")
 
     def test_dn_without_verified_certificate_is_refused(self) -> None:
         # Any client can send a DN header; only nginx's verdict counts.

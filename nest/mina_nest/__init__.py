@@ -19,7 +19,6 @@ from mina_nest.config import (
     DEFAULT_MAX_EXPANDED_BYTES,
     DEFAULT_MAX_UPLOAD_BYTES,
     DIGEST_HEADER,
-    UPLOAD_TEMP_PREFIX,
     get_host,
     get_max_expanded_mb,
     get_max_upload_mb,
@@ -27,6 +26,7 @@ from mina_nest.config import (
     get_port,
 )
 from mina_nest.identity import (
+    DN_HEADER,
     HostMapper,
     IdentityRefused,
     host_from_headers,
@@ -36,6 +36,7 @@ from mina_nest.ingest import (
     BundleTooLarge,
     InvalidBundle,
     ensure_host_directory,
+    ensure_state_directory,
     extract_archive,
     publish_bundle,
 )
@@ -58,6 +59,7 @@ class MinaReceiver:
             raise ValueError("upload limits must be positive")
         self.nest_dir = Path(nest_dir).resolve()
         self.nest_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+        self.state_dir = ensure_state_directory(self.nest_dir)
         self.max_upload_bytes = max_upload_bytes
         self.max_expanded_bytes = max_expanded_bytes
         # With a mapper, the host comes from the client certificate only.
@@ -121,9 +123,7 @@ class MinaReceiver:
         if not hmac.compare_digest(value, actual_digest):
             return Response("bundle digest does not match request body\n", status=400)
 
-        with tempfile.TemporaryDirectory(
-            prefix=UPLOAD_TEMP_PREFIX, dir=self.nest_dir
-        ) as temporary_name:
+        with tempfile.TemporaryDirectory(dir=self.state_dir / "tmp") as temporary_name:
             temporary_root = Path(temporary_name)
             tarball_hostname, bundle_name = extract_archive(
                 body, temporary_root, self.max_expanded_bytes
@@ -141,12 +141,27 @@ class MinaReceiver:
             host_directory = self.nest_dir / hostname
             ensure_host_directory(host_directory)
             bundle_directory = temporary_root / hostname / bundle_name
+            # For the receipt: who delivered the bundle, as far as we know.
+            # nginx sets X-Forwarded-For (examples/nginx.conf); gunicorn on
+            # a Unix socket has no peer address of its own.
+            if cert_hostname is None:
+                identity, client_dn = "unauthenticated", None
+            else:
+                identity, client_dn = "client-cert", request.headers.get(DN_HEADER)
+            details = {
+                "identity": identity,
+                "client_dn": client_dn,
+                "reported_hostname": tarball_hostname,
+                "remote_addr": request.headers.get("X-Forwarded-For")
+                or request.remote_addr,
+            }
             name, duplicate = publish_bundle(
-                self.nest_dir,
+                self.state_dir,
                 host_directory,
                 bundle_directory,
                 bundle_name,
                 actual_digest,
+                details,
             )
 
         if cert_hostname is None:

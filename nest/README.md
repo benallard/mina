@@ -87,8 +87,20 @@ single-bundle tar layout, and rejects links, special files, and unsafe paths.
 It unpacks to a private temporary directory and atomically renames complete
 bundles into the nest. A retry with the same bundle name and digest returns
 success without creating a second copy; a different digest gets a `_2`, `_3`,
-… suffix. Hidden digest markers in each host directory support this retry
-deduplication and should be left in place.
+… suffix.
+
+The nest keeps its own bookkeeping in `.mina-nest/` inside the nest
+directory; host directories hold only bundles:
+
+- `tmp/`: uploads being unpacked (safe to empty while the nest is stopped)
+- `lock`: serialises publishing between gunicorn workers
+- `receipts/{host}/{bundle}.json`: one per stored bundle, with its digest
+  (to recognise a resend), when it arrived, and who sent it: `identity`
+  (`client-cert` or `unauthenticated`), `client_dn`, the hostname the
+  bundle reported, and the sender's address
+
+Leave the receipts in place: without one, a resend of that bundle is stored
+again as `_2`, and a name that has a receipt is never handed out again.
 
 For another WSGI server, `mina_nest.app_from_env()` builds the app from
 `MINA_NEST_DIR`, and `mina_nest.create_app("/var/mina")` takes the directory

@@ -59,14 +59,10 @@ DIGEST_HEADER: Final = "X-Mina-Bundle-Digest"
 # Path/Directory names
 # ---------------------------------------------------------------------------
 
-LOCK_FILE: Final = ".mina-ingest.lock"
-"""Name of the ingest lock file."""
-
-DIGEST_MARKER_PREFIX: Final = ".mina-digest-"
-"""Prefix for digest marker temporary files."""
-
-UPLOAD_TEMP_PREFIX: Final = ".mina-upload-"
-"""Prefix for temporary upload directories."""
+STATE_DIR: Final = ".mina-nest"
+"""The nest's own bookkeeping, inside the nest directory: tmp/ (unpacking),
+lock (publishing), receipts/{host}/{bundle}.json. Host directories hold
+only bundles."""
 
 # ---------------------------------------------------------------------------
 # Validation
