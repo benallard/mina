@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import gzip
 import io
+import json
 import logging
 import os
 import shutil
@@ -12,20 +13,21 @@ import stat
 import tarfile
 import tempfile
 import zlib
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
 from mina_nest.config import (
     DEFAULT_DIR_MODE,
     DEFAULT_FILE_MODE,
-    DIGEST_MARKER_PREFIX,
     FILES_DIRECTORY,
-    LOCK_FILE,
     MAX_ARCHIVE_ENTRIES,
     MAX_MEMBER_READ,
     MAX_NAME_ATTEMPTS,
     MAX_PATH_COMPONENT_LENGTH,
     REQUIRED_BUNDLE_FILES,
+    STATE_DIR,
 )
 from mina_nest.names import is_bundle_name, is_safe_hostname
 
@@ -393,63 +395,90 @@ def ensure_host_directory(path: Path) -> None:
             raise OSError(f"{path} exists and is not a directory") from None
 
 
-def _read_digest_marker(path: Path) -> str | None:
+def ensure_state_directory(nest_dir: Path) -> Path:
+    """Create the nest's bookkeeping directory and return it.
+
+    tmp/ must be on the nest's filesystem, so that publishing a bundle
+    unpacked there is one atomic rename.
+    """
+    state = nest_dir / STATE_DIR
+    for path in (state, state / "tmp", state / "receipts"):
+        ensure_host_directory(path)
+    if (state / "tmp").stat().st_dev != nest_dir.stat().st_dev:
+        raise OSError(f"{state / 'tmp'} is not on the filesystem of {nest_dir}")
+    return state
+
+
+def _read_receipt_digest(path: Path) -> str | None:
+    """The digest in a receipt, or None if it is missing or unreadable."""
     try:
         if not stat.S_ISREG(path.lstat().st_mode):
             return None
-        return path.read_text(encoding="ascii").strip()
-    except FileNotFoundError:
+        digest = json.loads(path.read_text(encoding="utf-8")).get("digest")
+    except (FileNotFoundError, ValueError, AttributeError):
         return None
+    return digest if isinstance(digest, str) else None
 
 
-def _write_digest_marker(path: Path, digest: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=DIGEST_MARKER_PREFIX, dir=path.parent
-    )
+def _write_receipt(path: Path, receipt: Mapping[str, object], tmp: Path) -> None:
+    """Write `receipt` to `path` atomically and durably."""
+    descriptor, temporary_name = tempfile.mkstemp(suffix=".json", dir=tmp)
     temporary_path = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="ascii") as marker:
-            marker.write(digest + "\n")
-            marker.flush()
-            os.fsync(marker.fileno())
-        os.replace(temporary_path, path)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(receipt, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.rename(temporary_path, path)
+        _fsync_directory(path.parent)
     finally:
         temporary_path.unlink(missing_ok=True)
 
 
 def publish_bundle(
-    nest_dir: Path,
+    state: Path,
     host_directory: Path,
     bundle_directory: Path,
     bundle_name: str,
     digest: str,
+    details: Mapping[str, str | None],
 ) -> tuple[str, bool]:
-    """Atomically publish a complete bundle, or identify an idempotent retry."""
-    lock_path = nest_dir / LOCK_FILE
-    descriptor = os.open(
-        lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
-    )
+    """Atomically publish a complete bundle, or identify an idempotent retry.
+
+    Each stored bundle gets a receipt in state/receipts/{host}/: its digest,
+    for recognising a resend, plus `details` about who delivered it. A name
+    with a receipt is taken, even if its bundle is gone.
+    """
+    descriptor = os.open(state / "lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "rb") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        receipts = state / "receipts" / host_directory.name
+        ensure_host_directory(receipts)
         for attempt in range(1, MAX_NAME_ATTEMPTS + 1):
             name = bundle_name if attempt == 1 else f"{bundle_name}_{attempt}"
             destination = host_directory / name
-            marker = host_directory / f".{name}.mina-digest"
+            receipt = receipts / f"{name}.json"
             if os.path.lexists(destination):
                 if (
                     destination.is_dir()
                     and not destination.is_symlink()
-                    and _read_digest_marker(marker) == digest
+                    and _read_receipt_digest(receipt) == digest
                 ):
                     return name, True
                 continue
-            if os.path.lexists(marker):
+            if os.path.lexists(receipt):
                 continue
 
             os.rename(bundle_directory, destination)
-            _write_digest_marker(marker, digest)
-            # The rename and the marker are entries of the host directory;
-            # only once they are on disk may the agent drop its copy.
+            # The rename is an entry of the host directory; only once it is
+            # on disk may the agent drop its copy.
             _fsync_directory(host_directory)
+            received_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _write_receipt(
+                receipt,
+                {"digest": digest, "received_at": received_at, **details},
+                state / "tmp",
+            )
             return name, False
         raise OSError(f"no free bundle name for {bundle_name} in {host_directory}")
